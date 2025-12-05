@@ -43,7 +43,8 @@ def init_db():
                   found_date TEXT, 
                   last_scraped_date TEXT,
                   status TEXT,
-                  change_details TEXT)''') 
+                  change_details TEXT,
+                  last_exported TEXT)''') 
     conn.commit()
     conn.close()
 
@@ -56,7 +57,7 @@ def extract_email(text):
 def scrape_target_logic(target_username, mode="scan"):
     """
     mode='scan': Nur neue finden
-    mode='sync': Auch existierende auf Änderungen prüfen
+    mode='sync': Auch existierende auf Änderungen prüfen (für TARGETS)
     """
     global JOBS
     print(f"🚀 Starte Scraping für: {target_username} (Modus: {mode})")
@@ -129,42 +130,13 @@ def scrape_target_logic(target_username, mode="scan"):
                     except Exception as e:
                         print(f"Fehler bei User Detail {username}: {e}")
 
-                # --- MODUS: SYNC (Updates prüfen) ---
+                # --- MODUS: SYNC (Updates prüfen - nur wenn autom. Sync läuft) ---
                 elif existing and mode == "sync" and existing['status'] != 'hidden':
-                    try:
-                        details = cl.user_by_username_v1(username)
-                        # Wenn wir hier sind, existiert der User noch -> Status OK
-                        
-                        new_bio = details.get('biography', '')
-                        new_followers = details.get('follower_count', 0)
-                        new_email = details.get('public_email', '') or extract_email(new_bio)
-                        
-                        changes = []
-                        if new_bio != existing['bio']: changes.append("Bio geändert")
-                        old_followers = existing['followers_count'] or 0
-                        if abs(new_followers - old_followers) > 10: changes.append(f"Follower: {old_followers}->{new_followers}")
-
-                        new_status = 'changed' if changes else existing['status']
-                        # Falls er vorher 'not_found' war und jetzt wieder da ist:
-                        if existing['status'] == 'not_found': new_status = 'active' 
-
-                        change_str = ", ".join(changes) if changes else existing['change_details']
-
-                        c.execute('''UPDATE leads SET 
-                                     bio=?, email=?, followers_count=?, last_scraped_date=?, status=?, change_details=?
-                                     WHERE pk=?''',
-                                     (new_bio, new_email, new_followers, datetime.now().isoformat(), new_status, change_str, pk))
-                        conn.commit()
-                        users_processed += 1
-                        JOBS[target_username]['found'] = users_processed
-                        JOBS[target_username]['message'] = f'{users_processed} geprüft'
-
-                    except Exception as e:
-                        # User existiert wohl nicht mehr oder API Fehler
-                        print(f"User {username} nicht gefunden (Sync): {e}")
-                        c.execute("UPDATE leads SET status=?, change_details=? WHERE pk=?", 
-                                 ('not_found', 'Profil nicht mehr aufrufbar', pk))
-                        conn.commit()
+                    sync_single_lead(cl, c, existing)
+                    conn.commit()
+                    users_processed += 1
+                    JOBS[target_username]['found'] = users_processed
+                    JOBS[target_username]['message'] = f'{users_processed} geprüft'
             
             if not next_cursor: break
             end_cursor = next_cursor
@@ -184,11 +156,77 @@ def scrape_target_logic(target_username, mode="scan"):
     JOBS[target_username]['message'] = 'Fertig!'
     print(f"✅ Fertig mit {target_username}")
 
+def sync_single_lead(client, cursor, existing_row):
+    """Prüft einen einzelnen Lead auf Updates"""
+    username = existing_row['username']
+    pk = existing_row['pk']
+    try:
+        # NUTZE ID STATT USERNAME FÜR FRISCHERE DATEN
+        # Fallback auf Username wenn PK fehlt (sollte nicht passieren)
+        if pk:
+            details = client.user_by_id_v1(pk)
+        else:
+            details = client.user_by_username_v1(username)
+        
+        new_bio = details.get('biography', '')
+        new_followers = details.get('follower_count', 0)
+        new_email = details.get('public_email', '') or extract_email(new_bio)
+        new_external_url = details.get('external_url', '')
+
+        # DEBUG PRINTS
+        print(f"--- Sync Check: {username} (ID: {pk}) ---")
+        print(f"DB Bio: {existing_row['bio'][:30]}...")
+        print(f"API Bio: {new_bio[:30]}...")
+        
+        changes = []
+        if new_bio != existing_row['bio']: 
+            changes.append("Bio geaendert")
+            print("-> Bio Change erkannt!")
+            
+        old_followers = existing_row['followers_count'] or 0
+        if abs(new_followers - old_followers) > 10: 
+            changes.append(f"Follower: {old_followers}->{new_followers}")
+
+        # Status Update: Wenn vorher 'not_found', jetzt wieder da -> 'active'
+        new_status = existing_row['status']
+        if existing_row['status'] == 'not_found': new_status = 'active'
+        if changes: new_status = 'changed'
+
+        change_str = ", ".join(changes) if changes else existing_row['change_details']
+
+        cursor.execute('''UPDATE leads SET 
+                        bio=?, email=?, followers_count=?, last_scraped_date=?, status=?, change_details=?, external_url=?, full_name=?
+                        WHERE pk=?''',
+                        (new_bio, new_email, new_followers, datetime.now().isoformat(), new_status, change_str, new_external_url, details.get('full_name', ''), pk))
+        
+        time.sleep(0.5) 
+        return True
+    except Exception as e:
+        print(f"User {username} nicht gefunden (Sync): {e}")
+        cursor.execute("UPDATE leads SET status=?, change_details=? WHERE pk=?", 
+                        ('not_found', 'Profil nicht mehr aufrufbar', pk))
+        return False
+
+def sync_specific_users_logic(usernames):
+    print(f"🔄 Starte Sync für {len(usernames)} User...")
+    cl = Client(token=API_KEY)
+    conn = get_db()
+    c = conn.cursor()
+    
+    for username in usernames:
+        c.execute("SELECT * FROM leads WHERE username=?", (username,))
+        row = c.fetchone()
+        if row:
+            sync_single_lead(cl, c, row)
+            conn.commit()
+    
+    conn.close()
+    print("✅ Sync fertig.")
+
 # --- API ENDPOINTS ---
 
 @app.route('/api/login', methods=['POST'])
 def login():
-    # Passwort-Check deaktiviert für localhost Komfort
     return jsonify({"success": True, "token": "session_valid"})
 
 @app.route('/api/users', methods=['GET'])
@@ -212,6 +250,7 @@ def add_target():
 
 @app.route('/api/sync', methods=['POST'])
 def sync_all():
+    # Sync Targets (Standard)
     conn = get_db()
     targets = conn.execute("SELECT username FROM targets").fetchall()
     conn.close()
@@ -222,6 +261,88 @@ def sync_all():
             
     threading.Thread(target=run_sync).start()
     return jsonify({"message": "Full Sync gestartet..."})
+
+@app.route('/api/sync-users', methods=['POST'])
+def sync_users_endpoint():
+    # Sync Specific Users
+    usernames = request.json.get('usernames', [])
+    if not usernames: return jsonify({"error": "No usernames"}), 400
+    
+    threading.Thread(target=sync_specific_users_logic, args=(usernames,)).start()
+    return jsonify({"message": f"Sync für {len(usernames)} User gestartet."})
+
+def add_lead_logic(username):
+    print(f"Versuche manuell hinzuzufuegen: {username}")
+    cl = Client(token=API_KEY)
+    conn = get_db()
+    c = conn.cursor()
+    try:
+        user = cl.user_by_username_v1(username)
+        if not user:
+            print(f"User {username} nicht auf Instagram gefunden.")
+            return
+
+        pk = user.get('pk')
+        
+        c.execute("SELECT pk FROM leads WHERE pk=?", (pk,))
+        if not c.fetchone():
+            bio = user.get('biography', '')
+            email = user.get('public_email', '') or extract_email(bio)
+            followers = user.get('follower_count', 0)
+            is_private = 1 if user.get('is_private') else 0
+            external_url = user.get('external_url', '')
+
+            c.execute('''INSERT INTO leads 
+                            (pk, username, full_name, bio, email, is_private, followers_count, source_account, found_date, last_scraped_date, status, change_details, external_url)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                            (pk, user['username'], user['full_name'], bio, email, is_private, followers, 'manually_added', datetime.now().isoformat(), datetime.now().isoformat(), 'new', '', external_url))
+            conn.commit()
+            print(f"Manuell hinzugefuegt: {username}")
+        else:
+            print(f"User {username} existiert schon in der DB.")
+    except Exception as e:
+        print(f"Fehler beim manuellen Hinzufuegen von {username}: {e}")
+    finally:
+        conn.close()
+
+@app.route('/api/add-lead', methods=['POST'])
+def add_lead():
+    username = request.json.get('username')
+    if not username: return jsonify({"error": "Missing username"}), 400
+    
+    # Synchron ausführen für direktes Feedback
+    try:
+        add_lead_logic(username)
+        return jsonify({"message": f"{username} wurde hinzugefügt (oder existierte bereits).", "success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/mark-exported', methods=['POST'])
+def mark_exported():
+    usernames = request.json.get('usernames', [])
+    if not usernames: return jsonify({"error": "No usernames"}), 400
+    
+    conn = get_db()
+    now = datetime.now().isoformat()
+    # Nutze executemany für Performance
+    conn.executemany("UPDATE leads SET last_exported=? WHERE username=?", [(now, u) for u in usernames])
+    conn.commit()
+    conn.close()
+    return jsonify({"success": True})
+
+@app.route('/api/delete-users', methods=['POST'])
+def delete_users():
+    pks = request.json.get('pks', [])
+    if not pks: return jsonify({"error": "No IDs"}), 400
+    
+    conn = get_db()
+    # Erstelle Platzhalter String (?,?,?)
+    placeholders = ','.join('?' * len(pks))
+    sql = f"DELETE FROM leads WHERE pk IN ({placeholders})"
+    conn.execute(sql, pks)
+    conn.commit()
+    conn.close()
+    return jsonify({"success": True, "deleted": len(pks)})
 
 @app.route('/api/job-status/<username>', methods=['GET'])
 def job_status(username):

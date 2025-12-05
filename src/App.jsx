@@ -1,24 +1,38 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
-  Search, Users, RefreshCw, Trash2, Mail, Instagram, 
-  CheckCircle, AlertCircle, Calendar, Plus, Lock, EyeOff, Activity, ArrowUpDown, XCircle, Loader2, Ban, Heart
+  Search, RefreshCw, Trash2, Mail, Instagram, 
+  CheckCircle, AlertCircle, Plus, Lock, EyeOff, Activity, ArrowUpDown, XCircle, Loader2, Ban, Heart, Copy, Check, GripVertical, Play, ExternalLink, Globe, UserPlus
 } from 'lucide-react';
 
 const API_URL = "http://localhost:5000/api"; 
 
-// --- HELPER: Datum formatieren (DD.MM.YYYY) ---
+// --- HELPER ---
 const formatDate = (isoString) => {
   if (!isoString) return "-";
   try {
-    const date = new Date(isoString);
-    return date.toLocaleDateString('de-DE', {
+    return new Date(isoString).toLocaleDateString('de-DE', {
       day: '2-digit', month: '2-digit', year: 'numeric'
     });
   } catch (e) { return isoString; }
 };
 
+const TabButton = ({ active, label, count, onClick, color = "purple", icon }) => {
+    const baseClass = "px-4 py-2 rounded-lg text-sm font-bold transition-all flex items-center gap-2";
+    const activeClass = active 
+        ? `bg-${color}-100 text-${color}-700 border border-${color}-200 shadow-sm` 
+        : "text-slate-500 hover:bg-slate-50 border border-transparent";
+    
+    return (
+        <button onClick={onClick} className={`${baseClass} ${activeClass}`}>
+            {icon}
+            {label} 
+            {count !== undefined && <span className={`bg-white px-1.5 py-0.5 rounded text-xs opacity-80 border border-${color}-200`}>{count}</span>}
+        </button>
+    );
+};
+
 export default function App() {
-  const [isAuthenticated, setIsAuthenticated] = useState(true); // Passwortschutz deaktiviert
+  const [isAuthenticated, setIsAuthenticated] = useState(true);
   const [password, setPassword] = useState("");
   
   // Data
@@ -27,98 +41,73 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   
   // UI State
+  const [activeTab, setActiveTab] = useState('unfiltered'); 
   const [filterText, setFilterText] = useState('');
-  const [showHidden, setShowHidden] = useState(false);
-  const [showBlocked, setShowBlocked] = useState(false);
-  const [showFavorites, setShowFavorites] = useState(false);
-  const [onlyEmail, setOnlyEmail] = useState(false);
   const [newTarget, setNewTarget] = useState("");
+  const [selectedUsers, setSelectedUsers] = useState([]); 
   
   // Sorting
   const [sortConfig, setSortConfig] = useState({ key: 'found_date', direction: 'desc' });
   
   // Progress State
-  const [activeJob, setActiveJob] = useState(null); // { username: '...', status: '...', found: 0, message: '...' }
+  const [activeJob, setActiveJob] = useState(null);
+  const [copySuccess, setCopySuccess] = useState(false);
 
-  // Stats
+  // --- COLUMN RESIZING ---
+  const defaultWidths = {
+      select: 50,
+      user: 300,
+      actions: 200,
+      bio: 400,
+      follower: 150,
+      date: 150
+  };
+
+  const [colWidths, setColWidths] = useState(() => {
+      const saved = localStorage.getItem('instaMonitor_colWidths');
+      return saved ? JSON.parse(saved) : defaultWidths;
+  });
+
+  const resizingRef = useRef(null);
+
+  const startResize = (e, key) => {
+      e.preventDefault();
+      resizingRef.current = { key, startX: e.clientX, startWidth: colWidths[key] };
+      document.addEventListener('mousemove', handleResizeMove);
+      document.addEventListener('mouseup', handleResizeEnd);
+  };
+
+  const handleResizeMove = (e) => {
+      if (!resizingRef.current) return;
+      const { key, startX, startWidth } = resizingRef.current;
+      const diff = e.clientX - startX;
+      setColWidths(prev => ({ ...prev, [key]: Math.max(50, startWidth + diff) }));
+  };
+
+  const handleResizeEnd = () => {
+      resizingRef.current = null;
+      document.removeEventListener('mousemove', handleResizeMove);
+      document.removeEventListener('mouseup', handleResizeEnd);
+  };
+
+  useEffect(() => {
+      localStorage.setItem('instaMonitor_colWidths', JSON.stringify(colWidths));
+  }, [colWidths]);
+
+
+  // --- STATS ---
   const stats = useMemo(() => {
-    const active = users.filter(u => u.status !== 'hidden');
     return {
-        total: active.length,
-        withEmail: active.filter(u => u.email).length,
-        new: active.filter(u => u.status === 'new').length
+        total: users.length,
+        unfiltered: users.filter(u => ['new', 'active', 'changed', 'contacted', 'not_found'].includes(u.status)).length,
+        favorites: users.filter(u => u.status === 'favorite').length,
+        hidden: users.filter(u => u.status === 'hidden').length,
+        blocked: users.filter(u => u.status === 'blocked').length,
+        email: users.filter(u => u.email).length
     };
   }, [users]);
 
-  // --- SORTIER LOGIK ---
-  const requestSort = (key) => {
-    let direction = 'asc';
-    if (sortConfig.key === key && sortConfig.direction === 'asc') {
-      direction = 'desc';
-    }
-    setSortConfig({ key, direction });
-  };
-
-  const sortData = (data) => {
-    if (!sortConfig.key) return data;
-    
-    return [...data].sort((a, b) => {
-      let aVal = a[sortConfig.key];
-      let bVal = b[sortConfig.key];
-      
-      // Spezielle Behandlung für Zahlen & Strings
-      if (typeof aVal === 'string') aVal = aVal.toLowerCase();
-      if (typeof bVal === 'string') bVal = bVal.toLowerCase();
-      
-      if (aVal < bVal) return sortConfig.direction === 'asc' ? -1 : 1;
-      if (aVal > bVal) return sortConfig.direction === 'asc' ? 1 : -1;
-      return 0;
-    });
-  };
-
-  // --- POLLING FÜR PROGRESS ---
-  useEffect(() => {
-    let interval;
-    if (activeJob && activeJob.status !== 'finished' && activeJob.status !== 'error') {
-      interval = setInterval(async () => {
-        try {
-          const res = await fetch(`${API_URL}/job-status/${activeJob.username}`);
-          const data = await res.json();
-          if (data.status) {
-            setActiveJob(prev => ({ ...prev, ...data }));
-            if (data.status === 'finished' || data.status === 'error') {
-               loadData(); // Wenn fertig, Daten neu laden
-               setTimeout(() => setActiveJob(null), 5000); // Nach 5s ausblenden
-            }
-          }
-        } catch (e) { console.error("Polling error", e); }
-      }, 1000);
-    }
-    return () => clearInterval(interval);
-  }, [activeJob]);
-
-  // --- AUTO LOAD DATA ON LOGIN ---
-  useEffect(() => {
-    if (isAuthenticated) {
-        loadData();
-    }
-  }, [isAuthenticated]);
-
-  // --- DATA LOADING & ACTIONS ---
-  const handleLogin = async (e) => {
-    e.preventDefault();
-    try {
-        const res = await fetch(`${API_URL}/login`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ password })
-        });
-        const data = await res.json();
-        if (data.success) { setIsAuthenticated(true); loadData(); }
-        else { alert("Falsches Passwort!"); }
-    } catch (err) { if(password === "Tobideno85!") setIsAuthenticated(true); }
-  };
-
+  // --- DATA LOADING ---
   const loadData = async () => {
     setLoading(true);
     try {
@@ -130,10 +119,33 @@ export default function App() {
     setLoading(false);
   };
 
+  useEffect(() => { if (isAuthenticated) loadData(); }, [isAuthenticated]);
+
+  // --- POLLING ---
+  useEffect(() => {
+    let interval;
+    if (activeJob && !['finished', 'error'].includes(activeJob.status)) {
+      interval = setInterval(async () => {
+        try {
+          const res = await fetch(`${API_URL}/job-status/${activeJob.username}`);
+          const data = await res.json();
+          if (data.status) {
+            setActiveJob(prev => ({ ...prev, ...data }));
+            if (['finished', 'error'].includes(data.status)) {
+               loadData(); 
+               setTimeout(() => setActiveJob(null), 5000); 
+            }
+          }
+        } catch (e) {}
+      }, 1000);
+    }
+    return () => clearInterval(interval);
+  }, [activeJob]);
+
+  // --- ACTIONS ---
   const handleAddTarget = async () => {
     if (!newTarget) return;
     setActiveJob({ username: newTarget, status: 'starting', found: 0, message: 'Startet...' });
-    
     await fetch(`${API_URL}/add-target`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
@@ -142,223 +154,498 @@ export default function App() {
     setNewTarget("");
   };
 
-  const handleSync = async () => {
-    await fetch(`${API_URL}/sync`, { method: 'POST' });
-    alert("Sync gestartet! Prüfe im Hintergrund...");
+  const handleSyncSelected = async () => {
+    if (selectedUsers.length === 0) return alert("Bitte User auswählen!");
+    const usernames = users.filter(u => selectedUsers.includes(u.pk)).map(u => u.username);
+    await fetch(`${API_URL}/sync-users`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ usernames })
+    });
+    alert(`Sync für ${usernames.length} User gestartet!`);
+    setSelectedUsers([]);
   };
 
-  const toggleFavorite = async (pk, currentStatus) => {
-    // Toggle: Wenn Favorit -> Active, sonst -> Favorite
-    const newStatus = currentStatus === 'favorite' ? 'active' : 'favorite';
-    await updateStatus(pk, newStatus);
+  const handleDeleteSelected = async () => {
+    if (selectedUsers.length === 0) return;
+    // Keine Bestätigung mehr nötig oder doch? Du wolltest "Löschen" Button.
+    // Ich mache es sicherheitshalber mit Confirm, falls du dich verklickst.
+    // Aber für "Block" wolltest du kein Confirm. Bei Löschen ist es kritischer.
+    // Ich mache es ohne Confirm wenn du willst, aber Standard ist besser mit.
+    if (!window.confirm(`Wirklich ${selectedUsers.length} User endgültig löschen?`)) return;
+
+    await fetch(`${API_URL}/delete-users`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ pks: selectedUsers })
+    });
+    alert("Gelöscht.");
+    setSelectedUsers([]);
+    loadData();
   };
 
-  const toggleHideUser = async (pk, currentStatus) => {
-    // Wenn aktuell hidden -> wieder active (contacted)
-    // Wenn active -> hidden
-    const newStatus = currentStatus === 'hidden' ? 'contacted' : 'hidden';
-    await updateStatus(pk, newStatus);
+  const handleMarkExported = async (usernames) => {
+    await fetch(`${API_URL}/mark-exported`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ usernames })
+    });
+    loadData(); 
   };
 
-  const blockUser = async (pk) => {
-    // Sofort blockieren ohne Nachfrage
-    await updateStatus(pk, 'blocked');
+  const handleManualAdd = async (username) => {
+    if (!username) return;
+    setLoading(true); 
+    try {
+        const res = await fetch(`${API_URL}/add-lead`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ username })
+        });
+        const data = await res.json();
+        
+        if (data.success) {
+            alert(`Erfolg: ${data.message}`);
+            setNewTarget("");
+            loadData(); 
+        } else {
+            alert(`Fehler: ${data.error || "Unbekannt"}`);
+        }
+    } catch (e) {
+        alert("Verbindungsfehler zum Server.");
+    } finally {
+        setLoading(false);
+    }
   };
 
-  const updateStatus = async (pk, status) => {
-    setUsers(users.map(u => u.pk === pk ? {...u, status: status} : u));
+  const handleStatusChange = async (pk, newStatus) => {
+    setUsers(users.map(u => u.pk === pk ? {...u, status: newStatus} : u));
     await fetch(`${API_URL}/lead/update-status`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ pk, status })
+      body: JSON.stringify({ pk, status: newStatus })
     });
   };
 
-  // --- FILTER & SORT ---
+  const handleGoToExport = () => {
+    setActiveTab('export');
+  };
+
+  // --- SORTING ---
+  const requestSort = (key) => {
+    let direction = 'asc';
+    if (sortConfig.key === key && sortConfig.direction === 'asc') direction = 'desc';
+    setSortConfig({ key, direction });
+  };
+
+  // --- FILTERED DATA ---
   const processedUsers = useMemo(() => {
-    let filtered = users.filter(user => {
-      // Blocked Logic
-      if (user.status === 'blocked' && !showBlocked) return false;
-      if (user.status !== 'blocked' && showBlocked) return false; 
-      
-      // Favorite Logic
-      if (showFavorites) {
-          // Wenn Filter AN: Zeige NUR Favoriten
-          if (user.status !== 'favorite') return false;
-      } else {
-          // Wenn Filter AUS: Verstecke Favoriten (standardmäßig ausgeblendet wie Hidden)
-          if (user.status === 'favorite') return false;
-      }
+    let filtered = users;
 
-      // Hidden Logic
-      if (!showHidden && !showBlocked && !showFavorites && user.status === 'hidden') return false;
-      
-      if (onlyEmail && !user.email) return false;
-      
-      const searchContent = ((user.username||'')+(user.bio||'')+(user.full_name||'')).toLowerCase();
-      return searchContent.includes(filterText.toLowerCase());
+    switch (activeTab) {
+        case 'review': 
+        case 'unfiltered':
+            filtered = filtered.filter(u => ['new', 'active', 'changed', 'contacted', 'not_found'].includes(u.status));
+            break;
+        case 'favorites':
+            filtered = filtered.filter(u => u.status === 'favorite');
+            break;
+        case 'hidden':
+            filtered = filtered.filter(u => u.status === 'hidden');
+            break;
+        case 'blocked':
+            filtered = filtered.filter(u => u.status === 'blocked');
+            break;
+        case 'email':
+            filtered = filtered.filter(u => u.email && u.status !== 'blocked' && u.status !== 'hidden');
+            break;
+        case 'export':
+            if (selectedUsers.length > 0) {
+                filtered = filtered.filter(u => selectedUsers.includes(u.pk));
+            } else {
+                filtered = []; 
+            }
+            break;
+    }
+
+    if (filterText) {
+        const lower = filterText.toLowerCase();
+        filtered = filtered.filter(u => 
+            (u.username||'').toLowerCase().includes(lower) || 
+            (u.bio||'').toLowerCase().includes(lower) ||
+            (u.full_name||'').toLowerCase().includes(lower)
+        );
+    }
+
+    return [...filtered].sort((a, b) => {
+        let aVal = a[sortConfig.key];
+        let bVal = b[sortConfig.key];
+        
+        // Safety checks
+        if (aVal === null || aVal === undefined) aVal = "";
+        if (bVal === null || bVal === undefined) bVal = "";
+
+        if (typeof aVal === 'string') aVal = aVal.toLowerCase();
+        if (typeof bVal === 'string') bVal = bVal.toLowerCase();
+        if (aVal < bVal) return sortConfig.direction === 'asc' ? -1 : 1;
+        if (aVal > bVal) return sortConfig.direction === 'asc' ? 1 : -1;
+        return 0;
     });
-    
-    return sortData(filtered);
-  }, [users, filterText, showHidden, showBlocked, showFavorites, onlyEmail, sortConfig]);
+  }, [users, activeTab, filterText, sortConfig, selectedUsers]);
 
-  // --- LOGIN SCREEN ---
-  if (!isAuthenticated) {
-    return (
-      <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
-        <div className="bg-white p-8 rounded-2xl shadow-2xl w-full max-w-md">
-           <div className="flex justify-center mb-6"><div className="bg-purple-600 p-3 rounded-full text-white"><Lock size={32} /></div></div>
-           <h2 className="text-2xl font-bold text-center mb-6 text-slate-800">InstaMonitor Zugriff</h2>
-           <form onSubmit={handleLogin} className="space-y-4">
-             <input type="password" className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-purple-500 outline-none" placeholder="Passwort..." value={password} onChange={e => setPassword(e.target.value)}/>
-             <button className="w-full bg-purple-600 hover:bg-purple-700 text-white font-bold py-3 rounded-lg">Login</button>
-           </form>
-        </div>
+  // --- SELECTION LOGIC ---
+  const toggleSelectAll = () => {
+    if (selectedUsers.length === processedUsers.length) {
+        setSelectedUsers([]);
+    } else {
+        setSelectedUsers(processedUsers.map(u => u.pk));
+    }
+  };
+
+  const toggleSelectUser = (pk) => {
+    if (selectedUsers.includes(pk)) {
+        setSelectedUsers(selectedUsers.filter(id => id !== pk));
+    } else {
+        setSelectedUsers([...selectedUsers, pk]);
+    }
+  };
+
+  // --- KEYBOARD SHORTCUTS FOR REVIEW MODE ---
+  useEffect(() => {
+    if (activeTab !== 'review' || processedUsers.length === 0) return;
+
+    const handleKeyDown = (e) => {
+        const currentUser = processedUsers[0];
+        if (!currentUser) return;
+
+        if (e.key === 'ArrowRight') handleStatusChange(currentUser.pk, 'favorite');
+        if (e.key === 'ArrowLeft') handleStatusChange(currentUser.pk, 'blocked');
+        if (e.key === 'ArrowDown') handleStatusChange(currentUser.pk, 'hidden');
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [activeTab, processedUsers]);
+
+
+  // --- RESIZE HANDLE COMPONENT ---
+  const ResizeHandle = ({ id }) => (
+      <div 
+        className="absolute right-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-purple-400 group flex items-center justify-center"
+        onMouseDown={(e) => startResize(e, id)}
+      >
+          <div className="w-[1px] h-4 bg-slate-300 group-hover:bg-purple-500"></div>
       </div>
-    );
-  }
+  );
 
-  // --- DASHBOARD ---
+  // --- RENDER ---
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-800 font-sans">
-      <nav className="bg-white border-b border-slate-200 sticky top-0 z-20 px-6 py-4 flex flex-col md:flex-row items-center justify-between shadow-sm gap-4">
+    <div className="min-h-screen bg-slate-50 text-slate-800 font-sans" style={{ cursor: resizingRef.current ? 'col-resize' : 'auto' }}>
+      
+      {/* HEADER */}
+      <nav className="bg-white border-b border-slate-200 sticky top-0 z-20 px-6 py-4 flex items-center justify-between shadow-sm">
         <div className="flex items-center gap-2">
           <Instagram className="text-purple-600" size={28} />
-          <h1 className="text-2xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-purple-600 to-pink-600">InstaMonitor Pro</h1>
+          <h1 className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-purple-600 to-pink-600">InstaMonitor</h1>
         </div>
         
-        <div className="flex items-center gap-3">
+        {/* TAB BAR */}
+        <div className="flex gap-2 bg-slate-50 p-1.5 rounded-xl border border-slate-200 overflow-x-auto">
+            <TabButton active={activeTab === 'review'} onClick={() => setActiveTab('review')} label="Review (Speed)" color="pink" icon={<Play size={16}/>} />
+            <div className="w-[1px] bg-slate-300 mx-1"></div>
+            <TabButton active={activeTab === 'unfiltered'} onClick={() => setActiveTab('unfiltered')} label="Ungefiltert" count={stats.unfiltered} color="purple"/>
+            <TabButton active={activeTab === 'favorites'} onClick={() => setActiveTab('favorites')} label="Favoriten" count={stats.favorites} color="yellow"/>
+            <TabButton active={activeTab === 'email'} onClick={() => setActiveTab('email')} label="Mit Email" count={stats.email} color="blue"/>
+            <TabButton active={activeTab === 'hidden'} onClick={() => setActiveTab('hidden')} label="Versteckt" count={stats.hidden} color="slate"/>
+            <TabButton active={activeTab === 'blocked'} onClick={() => setActiveTab('blocked')} label="Blockiert" count={stats.blocked} color="red"/>
+            <TabButton active={activeTab === 'export'} onClick={() => setActiveTab('export')} label="Exportieren" color="green"/>
+            <TabButton active={activeTab === 'add'} onClick={() => setActiveTab('add')} label="Hinzufügen" color="indigo" icon={<UserPlus size={16}/>}/>
+        </div>
+
+        <div className="flex items-center gap-2">
            <div className="flex bg-slate-100 rounded-lg p-1">
-             <input type="text" placeholder="Neues Ziel..." className="bg-transparent px-3 py-2 outline-none text-base w-48" value={newTarget} onChange={e => setNewTarget(e.target.value)} />
-             <button onClick={handleAddTarget} className="bg-black text-white p-2 rounded-md hover:bg-slate-800"><Plus size={20} /></button>
+             <input type="text" placeholder="Neues Ziel..." className="bg-transparent px-3 py-1 outline-none text-sm w-32" value={newTarget} onChange={e => setNewTarget(e.target.value)} />
+             <button onClick={handleAddTarget} className="bg-black text-white p-1.5 rounded-md hover:bg-slate-800"><Plus size={16} /></button>
            </div>
-           <button onClick={handleSync} className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold bg-purple-100 text-purple-700 hover:bg-purple-200">
-             <RefreshCw size={18}/> Sync Check
-           </button>
-           <button onClick={loadData} className="p-2 hover:bg-slate-100 rounded-full"><RefreshCw size={20} /></button>
+           <button onClick={loadData} className="p-2 hover:bg-slate-100 rounded-full"><RefreshCw size={18} /></button>
         </div>
       </nav>
 
       <main className="w-full px-8 py-6 space-y-6">
         
-        {/* STATS */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-                <div className="text-slate-500 text-sm font-bold uppercase">Aktive Leads</div>
-                <div className="text-4xl font-bold mt-2">{stats.total}</div>
-            </div>
-            <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-                <div className="text-slate-500 text-sm font-bold uppercase">Mit Email</div>
-                <div className="text-4xl font-bold mt-2 text-green-600">{stats.withEmail}</div>
-            </div>
-            <div className="bg-gradient-to-br from-purple-600 to-indigo-600 p-6 rounded-xl shadow-md text-white">
-                <div className="text-indigo-100 text-sm font-bold uppercase">Neue Funde</div>
-                <div className="text-4xl font-bold mt-2">{stats.new}</div>
-            </div>
-        </div>
-
-        {/* PROGRESS BAR (Wenn Job aktiv) */}
-        {activeJob && (
-            <div className="bg-blue-50 border border-blue-200 p-4 rounded-xl flex items-center gap-4 animate-in fade-in slide-in-from-top-4">
-                <div className="bg-blue-600 p-2 rounded-full text-white"><Loader2 size={24} className="animate-spin"/></div>
-                <div className="flex-1">
-                    <div className="font-bold text-blue-900">Scrape läuft: {activeJob.username}</div>
-                    <div className="text-blue-700 text-sm">{activeJob.message}</div>
+        {/* CONTROLS (Nur anzeigen wenn nicht im Review Mode) */}
+        {activeTab !== 'review' && (
+        <div className="flex justify-between items-center bg-white p-3 rounded-xl shadow-sm border border-slate-200">
+            <div className="flex items-center gap-4">
+                <div className="relative w-72">
+                    <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                    <input type="text" placeholder="Suchen..." className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm outline-none focus:border-purple-500" value={filterText} onChange={(e) => setFilterText(e.target.value)} />
                 </div>
-                <div className="text-2xl font-bold text-blue-800">{activeJob.found} Leads</div>
+                {selectedUsers.length > 0 && (
+                    <div className="flex items-center gap-2 bg-purple-50 px-3 py-1.5 rounded-lg border border-purple-100 animate-in fade-in">
+                        <span className="text-purple-800 text-sm font-bold">{selectedUsers.length} ausgewählt</span>
+                        <button onClick={handleSyncSelected} className="text-xs bg-purple-600 text-white px-2 py-1 rounded hover:bg-purple-700 flex items-center gap-1">
+                            <RefreshCw size={12}/> Sync Check
+                        </button>
+                        <button onClick={handleGoToExport} className="text-xs bg-green-600 text-white px-2 py-1 rounded hover:bg-green-700 flex items-center gap-1">
+                            <Copy size={12}/> Zum Export
+                        </button>
+                        <button onClick={handleDeleteSelected} className="text-xs bg-red-600 text-white px-2 py-1 rounded hover:bg-red-700 flex items-center gap-1">
+                            <Trash2 size={12}/> Löschen
+                        </button>
+                    </div>
+                )}
             </div>
+            {activeJob && (
+                <div className="flex items-center gap-3 bg-blue-50 px-4 py-2 rounded-lg border border-blue-100">
+                    <Loader2 size={18} className="animate-spin text-blue-600"/>
+                    <span className="text-sm text-blue-800 font-medium">{activeJob.username}: {activeJob.message}</span>
+                </div>
+            )}
+        </div>
         )}
 
-        {/* CONTROLS */}
-        <div className="flex flex-col md:flex-row justify-between items-center bg-white p-4 rounded-xl shadow-sm border border-slate-200 gap-4">
-            <div className="relative w-full md:w-96">
-                <Search size={20} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                <input type="text" placeholder="Suche..." className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg text-base focus:border-purple-500 outline-none" value={filterText} onChange={(e) => setFilterText(e.target.value)} />
-            </div>
-            <div className="flex items-center gap-4">
-                <label className="flex items-center gap-2 text-sm font-bold text-slate-700 cursor-pointer bg-slate-50 px-4 py-2 rounded-lg hover:bg-slate-100"><input type="checkbox" checked={onlyEmail} onChange={e => setOnlyEmail(e.target.checked)} className="accent-purple-600"/> <Mail size={18} className={onlyEmail ? "text-purple-600" : "text-slate-400"}/> Nur mit Email</label>
-                <label className="flex items-center gap-2 text-sm font-bold text-yellow-700 cursor-pointer bg-yellow-50 px-4 py-2 rounded-lg hover:bg-yellow-100"><input type="checkbox" checked={showFavorites} onChange={e => {setShowFavorites(e.target.checked); setShowHidden(false); setShowBlocked(false)}} className="accent-yellow-500"/> <Heart size={18} className={showFavorites ? "fill-yellow-500 text-yellow-500" : "text-yellow-400"}/> Favoriten</label>
-                <label className="flex items-center gap-2 text-sm font-bold text-slate-700 cursor-pointer bg-slate-50 px-4 py-2 rounded-lg hover:bg-slate-100"><input type="checkbox" checked={showHidden} onChange={e => {setShowHidden(e.target.checked); setShowBlocked(false); setShowFavorites(false)}} className="accent-purple-600"/> <EyeOff size={18} className={showHidden ? "text-slate-800" : "text-slate-400"}/> Versteckte</label>
-                <label className="flex items-center gap-2 text-sm font-bold text-red-700 cursor-pointer bg-red-50 px-4 py-2 rounded-lg hover:bg-red-100"><input type="checkbox" checked={showBlocked} onChange={e => {setShowBlocked(e.target.checked); setShowHidden(false); setShowFavorites(false)}} className="accent-red-600"/> <Ban size={18} className={showBlocked ? "text-red-800" : "text-red-400"}/> Blockierte</label>
-            </div>
-        </div>
-
-        {/* TABLE */}
-        <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-          <table className="w-full text-left">
-            <thead className="bg-slate-50 text-slate-500 font-bold border-b border-slate-200 uppercase tracking-wider text-sm">
-              <tr>
-                <th className="p-6 cursor-pointer hover:bg-slate-100" onClick={() => requestSort('username')}>User <ArrowUpDown size={14} className="inline opacity-50"/></th>
-                <th className="p-6 min-w-[180px]">Aktionen</th>
-                <th className="p-6 w-1/3">Bio & Email</th>
-                <th className="p-6 cursor-pointer hover:bg-slate-100" onClick={() => requestSort('followers_count')}>Follower <ArrowUpDown size={14} className="inline opacity-50"/></th>
-                <th className="p-6 cursor-pointer hover:bg-slate-100" onClick={() => requestSort('found_date')}>Datum <ArrowUpDown size={14} className="inline opacity-50"/></th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100 text-base">
-              {processedUsers.map((user) => {
-                const isFavorite = user.status === 'favorite';
-                const isChanged = user.status === 'changed';
-                const isHidden = user.status === 'hidden';
-                const isNotFound = user.status === 'not_found';
+        {/* --- REVIEW MODE --- */}
+        {activeTab === 'add' ? (
+            <div className="flex flex-col items-center justify-center min-h-[50vh] bg-white rounded-2xl shadow-sm border border-slate-200 p-12">
+                <div className="bg-indigo-100 p-4 rounded-full text-indigo-600 mb-6">
+                    <UserPlus size={48} />
+                </div>
+                <h2 className="text-2xl font-bold text-slate-800 mb-2">Manuell User hinzufügen</h2>
+                <p className="text-slate-500 mb-8 text-center max-w-md">
+                    Füge hier einen Instagram-Usernamen ein. Das System holt die Daten (Bio, Follower, etc.) und fügt ihn als "NEU" zur Liste hinzu.
+                </p>
                 
-                return (
-                  <tr key={user.pk} className={`group transition-colors 
-                    ${isChanged ? 'bg-blue-50' : ''} 
-                    ${isFavorite ? 'bg-yellow-100 border-l-4 border-yellow-400' : ''}
-                    ${isHidden ? 'bg-slate-100 opacity-50 grayscale' : ''}
-                    ${isNotFound ? 'bg-red-50' : 'hover:bg-slate-50'}
-                  `}>
-                    <td className="p-6 align-top">
-                      <div className="flex items-start gap-4">
-                        <div className={`w-12 h-12 rounded-full flex items-center justify-center font-bold text-lg text-white ${isNotFound ? 'bg-red-400' : 'bg-slate-300'}`}>
-                            {user.username[0].toUpperCase()}
+                <div className="flex gap-2 w-full max-w-md">
+                    <input 
+                        type="text" 
+                        placeholder="Instagram Username (ohne @)" 
+                        className="flex-1 px-4 py-3 border border-slate-300 rounded-lg outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 transition-all"
+                        value={newTarget}
+                        onChange={e => setNewTarget(e.target.value)}
+                        onKeyDown={e => e.key === 'Enter' && handleManualAdd(newTarget)}
+                    />
+                    <button 
+                        onClick={() => handleManualAdd(newTarget)} 
+                        className="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-3 rounded-lg font-bold transition-colors"
+                    >
+                        {loading ? <Loader2 className="animate-spin"/> : "Hinzufügen"}
+                    </button>
+                </div>
+            </div>
+        ) : activeTab === 'review' ? (
+            <div className="flex flex-col items-center justify-center min-h-[60vh]">
+                {processedUsers.length > 0 ? (
+                    <div className="bg-white rounded-2xl shadow-xl border border-slate-200 p-8 w-full max-w-2xl text-center relative overflow-hidden">
+                        <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-purple-500 to-pink-500"></div>
+                        
+                        {/* Source Badge */}
+                        <div className="absolute top-4 right-4 bg-slate-100 text-slate-500 text-xs px-2 py-1 rounded-full">
+                            Source: {processedUsers[0].source_account}
                         </div>
-                        <div>
-                          <div className="font-bold text-lg text-slate-900 flex items-center gap-2">
-                            <a href={`https://instagram.com/${user.username}`} target="_blank" className="hover:text-purple-600 hover:underline">{user.username}</a>
-                            {user.status === 'new' && <span className="bg-purple-600 text-white text-xs px-2 py-0.5 rounded">NEU</span>}
-                            {isNotFound && <span className="bg-red-600 text-white text-xs px-2 py-0.5 rounded flex items-center gap-1"><XCircle size={12}/> GELÖSCHT</span>}
-                          </div>
-                          <div className="text-slate-500 font-medium">{user.full_name}</div>
-                          {user.is_private === 1 && <div className="text-xs text-slate-400 flex items-center gap-1 mt-1"><Lock size={12}/> Privat</div>}
+
+                        {/* Avatar */}
+                        <div className="w-32 h-32 bg-slate-200 rounded-full mx-auto flex items-center justify-center text-4xl font-bold text-slate-400 mb-6">
+                            {processedUsers[0].username[0].toUpperCase()}
                         </div>
-                      </div>
-                    </td>
-                    <td className="p-6 align-top">
-                      <div className="flex gap-2"> 
-                         {/* Favorite Button */}
-                         <button onClick={() => toggleFavorite(user.pk, user.status)} className={`p-2 border rounded-lg shadow-sm transition-colors ${user.status === 'favorite' ? 'bg-yellow-100 border-yellow-300 text-yellow-600' : 'bg-white border-slate-200 text-slate-400 hover:text-yellow-500'}`} title="Favorit">
-                            <Heart size={20} className={user.status === 'favorite' ? 'fill-yellow-500' : ''}/>
-                         </button>
 
-                         <a href={`https://instagram.com/${user.username}`} target="_blank" className="p-2 text-slate-400 hover:text-pink-600 bg-white border border-slate-200 rounded-lg shadow-sm"><Instagram size={20} /></a>
-                         
-                         <button onClick={() => blockUser(user.pk)} className="p-2 bg-white border border-slate-200 rounded-lg shadow-sm hover:text-red-600 hover:border-red-400" title="Blockieren"><Ban size={20} /></button>
+                        {/* Name & Link */}
+                        <h2 className="text-3xl font-bold text-slate-800 mb-2">{processedUsers[0].username}</h2>
+                        <div className="text-slate-500 mb-6">{processedUsers[0].full_name}</div>
 
-                         <button onClick={() => toggleHideUser(user.pk, user.status)} className="p-2 bg-white border border-slate-200 rounded-lg shadow-sm hover:text-slate-600">{isHidden ? <Users size={20} /> : <EyeOff size={20} />}</button>
-                      </div>
-                    </td>
-                    <td className="p-6 align-top">
-                      {isChanged && user.change_details && <div className="mb-2 text-xs font-bold text-yellow-800 bg-yellow-200 p-1.5 rounded inline-block">Änderung: {user.change_details}</div>}
-                      <div className="text-slate-700 italic whitespace-pre-wrap leading-relaxed">{user.bio}</div>
-                      {user.email && <div className="mt-3 flex items-center gap-2 text-purple-700 font-bold bg-purple-50 px-3 py-1.5 rounded w-fit text-sm"><Mail size={16} /> {user.email}</div>}
-                    </td>
-                    <td className="p-6 align-top">
-                        <div className="font-bold text-blue-600 text-lg">{user.followers_count?.toLocaleString()}</div>
-                        <div className="text-slate-400 text-sm mt-1">Followers</div>
-                    </td>
-                    <td className="p-6 align-top text-sm text-slate-600">
-                        <div>Gefunden: {formatDate(user.found_date)}</div>
-                        <div className="text-xs opacity-70 mt-1">Check: {formatDate(user.last_scraped_date)}</div>
-                        <div className="text-xs text-slate-400 mt-2">Source: {user.source_account}</div>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+                        {/* TOP ACTION BUTTONS */}
+                        <div className="flex justify-center gap-4 mb-6">
+                            <button 
+                                onClick={() => handleStatusChange(processedUsers[0].pk, 'blocked')}
+                                className="flex flex-col items-center gap-1 p-3 rounded-xl bg-red-50 text-red-600 border border-red-200 hover:bg-red-100 hover:scale-105 transition-all w-24 shadow-sm"
+                                title="Pfeil Links"
+                            >
+                                <Ban size={28}/>
+                                <span className="font-bold text-xs">Block</span>
+                            </button>
+
+                            <button 
+                                onClick={() => handleStatusChange(processedUsers[0].pk, 'hidden')}
+                                className="flex flex-col items-center gap-1 p-3 rounded-xl bg-slate-100 text-slate-600 border border-slate-200 hover:bg-slate-200 hover:scale-105 transition-all w-24 shadow-sm"
+                                title="Pfeil Runter"
+                            >
+                                <EyeOff size={28}/>
+                                <span className="font-bold text-xs">Hide</span>
+                            </button>
+
+                            <button 
+                                onClick={() => handleStatusChange(processedUsers[0].pk, 'favorite')}
+                                className="flex flex-col items-center gap-1 p-3 rounded-xl bg-yellow-100 text-yellow-600 border border-yellow-200 hover:bg-yellow-200 hover:scale-105 transition-all w-24 shadow-sm"
+                                title="Pfeil Rechts"
+                            >
+                                <Heart size={28} className="fill-yellow-600"/>
+                                <span className="font-bold text-xs">Fav</span>
+                            </button>
+                        </div>
+
+                        {/* Bio */}
+                        <div className="bg-slate-50 p-8 rounded-xl border border-slate-100 mb-8 text-center">
+                            <p className="whitespace-pre-wrap text-slate-700 italic text-lg leading-relaxed mb-6 max-h-60 overflow-y-auto">{processedUsers[0].bio || "Keine Biografie"}</p>
+                            
+                            {processedUsers[0].external_url && (
+                                <div className="mb-4">
+                                    <a href={processedUsers[0].external_url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 text-blue-600 font-bold bg-blue-50 px-4 py-2 rounded-full hover:underline">
+                                        <Globe size={18}/> {processedUsers[0].external_url.replace(/^https?:\/\//, '')}
+                                    </a>
+                                </div>
+                            )}
+
+                            {processedUsers[0].email && (
+                                <div className="inline-flex items-center gap-2 text-purple-600 font-bold bg-purple-50 px-4 py-2 rounded-full mb-6">
+                                    <Mail size={18}/> {processedUsers[0].email}
+                                </div>
+                            )}
+
+                            <div className="flex justify-center">
+                                <a 
+                                    href={`https://instagram.com/${processedUsers[0].username}`} 
+                                    target="_blank"
+                                    rel="noreferrer" 
+                                    className="flex items-center gap-2 bg-gradient-to-r from-purple-600 to-pink-600 text-white px-8 py-3 rounded-full text-lg font-bold hover:opacity-90 shadow-lg transition-transform hover:scale-105"
+                                >
+                                    <Instagram size={24}/> Profil auf Instagram öffnen
+                                </a>
+                            </div>
+                        </div>
+
+                    </div>
+                ) : (
+                    <div className="text-center p-12 bg-white rounded-2xl shadow-sm border border-slate-200">
+                        <div className="text-6xl mb-4">🎉</div>
+                        <h2 className="text-2xl font-bold text-slate-800 mb-2">Alles erledigt!</h2>
+                        <p className="text-slate-500">Keine ungefilterten User mehr vorhanden.</p>
+                        <button onClick={() => setActiveTab('favorites')} className="mt-6 text-purple-600 font-bold hover:underline">Zu den Favoriten gehen</button>
+                    </div>
+                )}
+            </div>
+        ) : activeTab === 'export' ? (
+            <div className="bg-white p-8 rounded-xl shadow-sm border border-slate-200">
+                <h2 className="text-xl font-bold mb-4 flex items-center gap-2"><Copy size={24}/> Export Ansicht</h2>
+                <p className="text-slate-500 mb-4">Hier sind die Usernamen der aktuell ausgewählten / gefilterten Liste zum Kopieren.</p>
+                <textarea 
+                    readOnly
+                    className="w-full h-64 p-4 bg-slate-50 border border-slate-200 rounded-lg font-mono text-sm focus:outline-none"
+                    value={processedUsers.map(u => u.username).join('\n')}
+                />
+                <div className="mt-4 flex gap-3">
+                    <button 
+                        onClick={() => {
+                            navigator.clipboard.writeText(processedUsers.map(u => u.username).join('\n'));
+                            setCopySuccess(true);
+                            setTimeout(() => setCopySuccess(false), 2000);
+                            handleMarkExported(processedUsers.map(u => u.username));
+                        }}
+                        className="bg-green-600 hover:bg-green-700 text-white px-6 py-2 rounded-lg font-bold flex items-center gap-2"
+                        disabled={processedUsers.length === 0}
+                    >
+                        {copySuccess ? <Check size={20}/> : <Copy size={20}/>}
+                        {copySuccess ? "Kopiert!" : "Kopieren & Als Exportiert markieren"}
+                    </button>
+                    <button onClick={() => setSelectedUsers([])} className="bg-slate-200 hover:bg-slate-300 text-slate-700 px-6 py-2 rounded-lg font-bold flex items-center gap-2" disabled={selectedUsers.length === 0}>
+                        <Trash2 size={20}/> Liste leeren
+                    </button>
+                </div>
+            </div>
+        ) : (
+            <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-x-auto">
+                <table className="w-full text-left table-fixed">
+                    <thead className="bg-slate-50 text-slate-500 font-bold border-b border-slate-200 uppercase tracking-wider text-sm">
+                        <tr>
+                            <th className="p-4 relative" style={{ width: colWidths.select }}>
+                                <input type="checkbox" checked={selectedUsers.length === processedUsers.length && processedUsers.length > 0} onChange={toggleSelectAll} className="w-4 h-4 rounded accent-purple-600"/>
+                                <ResizeHandle id="select"/>
+                            </th>
+                            <th className="p-4 relative hover:bg-slate-100" style={{ width: colWidths.user }}>
+                                <div className="flex items-center gap-2 cursor-pointer" onClick={() => requestSort('username')}>User <ArrowUpDown size={14} className="opacity-50"/></div>
+                                <ResizeHandle id="user"/>
+                            </th>
+                            <th className="p-4 relative" style={{ width: colWidths.actions }}>
+                                Aktionen
+                                <ResizeHandle id="actions"/>
+                            </th>
+                            <th className="p-4 relative" style={{ width: colWidths.bio }}>
+                                Bio & Email
+                                <ResizeHandle id="bio"/>
+                            </th>
+                            <th className="p-4 relative hover:bg-slate-100" style={{ width: colWidths.follower }}>
+                                <div className="flex items-center gap-2 cursor-pointer" onClick={() => requestSort('followers_count')}>Follower <ArrowUpDown size={14} className="opacity-50"/></div>
+                                <ResizeHandle id="follower"/>
+                            </th>
+                            <th className="p-4 relative hover:bg-slate-100" style={{ width: colWidths.date }}>
+                                <div className="flex items-center gap-2 cursor-pointer" onClick={() => requestSort('found_date')}>Datum <ArrowUpDown size={14} className="opacity-50"/></div>
+                                <ResizeHandle id="date"/>
+                            </th>
+                        </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 text-base">
+                        {processedUsers.map((user) => {
+                            const isSelected = selectedUsers.includes(user.pk);
+                            const isFavorite = user.status === 'favorite';
+                            return (
+                                <tr key={user.pk} className={`group transition-colors 
+                                    ${isSelected ? 'bg-purple-50' : 'hover:bg-slate-50'}
+                                    ${isFavorite ? 'bg-yellow-50' : ''}
+                                `}>
+                                    <td className="p-4 align-top truncate"><input type="checkbox" checked={isSelected} onChange={() => toggleSelectUser(user.pk)} className="w-4 h-4 rounded accent-purple-600 mt-2"/></td>
+                                    
+                                    <td className="p-4 align-top overflow-hidden">
+                                        <div className="flex items-center gap-3">
+                                            <div className="w-10 h-10 rounded-full bg-slate-200 flex-shrink-0 flex items-center justify-center font-bold text-slate-500 text-sm">{user.username[0].toUpperCase()}</div>
+                                            <div className="min-w-0">
+                                                <a href={`https://instagram.com/${user.username}`} target="_blank" className="font-bold text-lg text-slate-900 hover:text-purple-600 hover:underline block truncate">{user.username}</a>
+                                                <div className="text-xs text-slate-400 truncate">{user.full_name}</div>
+                                                <div className="text-[10px] text-slate-300 mt-0.5 truncate">Src: {user.source_account}</div>
+                                                {user.status === 'new' && <span className="inline-block mt-1 bg-purple-600 text-white text-[10px] px-1.5 rounded">NEU</span>}
+                                            </div>
+                                        </div>
+                                    </td>
+
+                                    <td className="p-4 align-top">
+                                        <div className="flex flex-wrap gap-2">
+                                            <button onClick={() => handleStatusChange(user.pk, user.status === 'favorite' ? 'active' : 'favorite')} className={`p-2 rounded-lg border shadow-sm transition-colors ${user.status === 'favorite' ? 'bg-yellow-400 border-yellow-500 text-white' : 'bg-white border-slate-200 text-slate-400 hover:bg-yellow-50 hover:text-yellow-500'}`} title="Favorit">
+                                                <Heart size={18} className={user.status === 'favorite' ? 'fill-white' : ''}/>
+                                            </button>
+                                            <button onClick={() => handleStatusChange(user.pk, 'blocked')} className="p-2 bg-white border border-slate-200 rounded-lg shadow-sm text-slate-400 hover:bg-red-50 hover:text-red-600 hover:border-red-200" title="Blockieren"><Ban size={18}/></button>
+                                            <button onClick={() => handleStatusChange(user.pk, user.status === 'hidden' ? 'active' : 'hidden')} className="p-2 bg-white border border-slate-200 rounded-lg shadow-sm text-slate-400 hover:bg-slate-100 hover:text-slate-600" title={user.status === 'hidden' ? 'Anzeigen' : 'Verstecken'}>
+                                                {user.status === 'hidden' ? <EyeOff size={18}/> : <EyeOff size={18} className="opacity-50"/>}
+                                            </button>
+                                        </div>
+                                    </td>
+
+                                    <td className="p-4 align-top">
+                                        {user.status === 'changed' && <div className="mb-1 text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded inline-block">Update: {user.change_details}</div>}
+                                        <div className="text-slate-600 text-sm whitespace-pre-wrap break-words">{user.bio}</div>
+                                        
+                                        {/* External URL */}
+                                        {user.external_url && (
+                                            <a href={user.external_url} target="_blank" rel="noreferrer" className="mt-2 flex items-center gap-1 text-blue-600 font-bold text-xs hover:underline bg-blue-50 px-2 py-1 rounded w-fit max-w-full truncate">
+                                                <Globe size={12}/> {user.external_url.replace(/^https?:\/\//, '')}
+                                            </a>
+                                        )}
+
+                                        {user.email && <div className="mt-2 flex items-center gap-1 text-purple-700 font-bold text-xs"><Mail size={12}/> {user.email}</div>}
+                                    </td>
+
+                                    <td className="p-4 align-top">
+                                        <div className="font-bold text-blue-600">{user.followers_count?.toLocaleString()}</div>
+                                    </td>
+
+                                    <td className="p-4 align-top text-xs text-slate-500">
+                                        <div>{formatDate(user.found_date)}</div>
+                                        {user.last_exported && <div className="text-green-600 mt-1">Exp: {formatDate(user.last_exported)}</div>}
+                                    </td>
+                                </tr>
+                            );
+                        })}
+                    </tbody>
+                </table>
+            </div>
+        )}
       </main>
     </div>
   );
