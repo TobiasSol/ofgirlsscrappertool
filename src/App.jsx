@@ -4,7 +4,7 @@ import {
   CheckCircle, AlertCircle, Plus, Lock, EyeOff, Activity, ArrowUpDown, XCircle, Loader2, Ban, Heart, Copy, Check, GripVertical, Play, ExternalLink, Globe, UserPlus, Menu
 } from 'lucide-react';
 
-const API_URL = "http://localhost:5000/api"; 
+const API_URL = "/api"; 
 
 // --- HELPER ---
 const formatDate = (isoString) => {
