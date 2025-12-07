@@ -28,6 +28,13 @@ if DATA_PATH != "." and not os.path.exists(DATA_PATH):
 app = Flask(__name__, static_folder='../dist', static_url_path='')
 CORS(app)
 
+# After-Request Handler: Setze Permissions-Policy für alle Responses
+@app.after_request
+def set_permissions_policy(response):
+    # Blockiere lokale Netzwerk-Zugriffe
+    response.headers['Permissions-Policy'] = 'local-network=()'
+    return response
+
 # Globaler Status-Speicher für laufende Jobs
 # Format: {'username': {'status': 'running', 'found': 0, 'total_followers': 0, 'message': '...'}}
 JOBS = {}
