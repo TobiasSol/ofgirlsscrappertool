@@ -3,15 +3,26 @@ import time
 import random
 import re
 import threading
+import os
 from datetime import datetime
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from hikerapi import Client
 
 # --- KONFIGURATION ---
-API_KEY = "y0a9buus1f3z0vx3gqodr8lh11vvsxyh"
-DB_FILE = "instagram_leads.db"
-APP_PASSWORD = "Tobideno85!"
+# Flexibel für Replit, Render und Lokal
+API_KEY = os.environ.get("HIKERAPI_TOKEN", "y0a9buus1f3z0vx3gqodr8lh11vvsxyh")
+APP_PASSWORD = os.environ.get("APP_PASSWORD", "Tobideno85!")
+
+# Datenbank Pfad Logik
+# Auf Render setzen wir DATA_PATH per Env Var auf '/data' (für Persistent Disk)
+# Auf Replit/Lokal ist DATA_PATH leer, also nutzen wir '.' (aktueller Ordner)
+DATA_PATH = os.environ.get("DATA_PATH", ".")
+DB_FILE = os.path.join(DATA_PATH, "instagram_leads.db")
+
+# Sicherstellen, dass der Ordner existiert
+if DATA_PATH != "." and not os.path.exists(DATA_PATH):
+    os.makedirs(DATA_PATH, exist_ok=True)
 
 app = Flask(__name__)
 CORS(app)

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   Search, RefreshCw, Trash2, Mail, Instagram, 
-  CheckCircle, AlertCircle, Plus, Lock, EyeOff, Activity, ArrowUpDown, XCircle, Loader2, Ban, Heart, Copy, Check, GripVertical, Play, ExternalLink, Globe, UserPlus
+  CheckCircle, AlertCircle, Plus, Lock, EyeOff, Activity, ArrowUpDown, XCircle, Loader2, Ban, Heart, Copy, Check, GripVertical, Play, ExternalLink, Globe, UserPlus, Menu
 } from 'lucide-react';
 
 const API_URL = "http://localhost:5000/api"; 
@@ -17,7 +17,7 @@ const formatDate = (isoString) => {
 };
 
 const TabButton = ({ active, label, count, onClick, color = "purple", icon }) => {
-    const baseClass = "px-4 py-2 rounded-lg text-sm font-bold transition-all flex items-center gap-2";
+    const baseClass = "px-3 py-2 rounded-lg text-sm font-bold transition-all flex items-center gap-2 whitespace-nowrap";
     const activeClass = active 
         ? `bg-${color}-100 text-${color}-700 border border-${color}-200 shadow-sm` 
         : "text-slate-500 hover:bg-slate-50 border border-transparent";
@@ -26,14 +26,28 @@ const TabButton = ({ active, label, count, onClick, color = "purple", icon }) =>
         <button onClick={onClick} className={`${baseClass} ${activeClass}`}>
             {icon}
             {label} 
-            {count !== undefined && <span className={`bg-white px-1.5 py-0.5 rounded text-xs opacity-80 border border-${color}-200`}>{count}</span>}
+            {count !== undefined && <span className={`bg-white px-1.5 py-0.5 rounded-full text-xs opacity-80 border border-${color}-200`}>{count}</span>}
         </button>
     );
 };
 
+// --- PRELOADER COMPONENT ---
+const Preloader = () => (
+    <div className="fixed inset-0 bg-white z-50 flex flex-col items-center justify-center animate-out fade-out duration-500 fill-mode-forwards" style={{animationDelay: '1.5s', pointerEvents: 'none'}}>
+        <div className="relative mb-4">
+            <Instagram size={64} className="text-purple-600 animate-bounce" />
+            <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 w-12 h-1 bg-black/10 rounded-full blur-sm animate-pulse"></div>
+        </div>
+        <h1 className="text-2xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-purple-600 to-pink-600 animate-pulse">
+            InstaMonitor Pro
+        </h1>
+    </div>
+);
+
 export default function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(true);
   const [password, setPassword] = useState("");
+  const [appReady, setAppReady] = useState(false); // Für Preloader
   
   // Data
   const [users, setUsers] = useState([]);
@@ -56,11 +70,11 @@ export default function App() {
   // --- COLUMN RESIZING ---
   const defaultWidths = {
       select: 50,
-      user: 300,
-      actions: 200,
-      bio: 400,
-      follower: 150,
-      date: 150
+      user: 250,
+      actions: 180,
+      bio: 350,
+      follower: 120,
+      date: 120
   };
 
   const [colWidths, setColWidths] = useState(() => {
@@ -119,7 +133,14 @@ export default function App() {
     setLoading(false);
   };
 
-  useEffect(() => { if (isAuthenticated) loadData(); }, [isAuthenticated]);
+  // Preloader Logic
+  useEffect(() => { 
+      if (isAuthenticated) {
+          loadData().then(() => {
+              setTimeout(() => setAppReady(true), 1500); // Künstliche Pause für den Effekt
+          });
+      }
+  }, [isAuthenticated]);
 
   // --- POLLING ---
   useEffect(() => {
@@ -156,10 +177,8 @@ export default function App() {
 
   const handleSyncSelected = async () => {
     if (selectedUsers.length === 0) return alert("Bitte User auswählen!");
-    
     const usernames = users.filter(u => selectedUsers.includes(u.pk)).map(u => u.username);
-    setLoading(true); 
-
+    setLoading(true);
     try {
         const res = await fetch(`${API_URL}/sync-users`, {
             method: 'POST',
@@ -167,38 +186,28 @@ export default function App() {
             body: JSON.stringify({ usernames })
         });
         const data = await res.json();
-        
-        if (data.success && data.job_id) {
-            // Job ID setzen -> Polling startet automatisch (siehe useEffect[activeJob])
-            // Wir müssen das Format anpassen, da der Poller username erwartet?
-            // Nein, der Poller ruft /api/job-status/<username> auf.
-            // Unser Job-ID ist jetzt aber "sync_...". Das Backend muss das handeln.
-            // Backend endpoint /api/job-status/<username> nimmt alles was in JOBS ist.
-            // Also: username = job_id.
-            setActiveJob({ username: data.job_id, status: 'running', found: 0, message: 'Startet...' });
-            setSelectedUsers([]);
+        if (data.success) {
+            if(data.job_id) {
+                setActiveJob({ username: data.job_id, status: 'running', found: 0, message: 'Startet...' });
+                setSelectedUsers([]);
+            } else {
+                await loadData();
+                alert(`Sync fertig: ${data.message}`);
+                setSelectedUsers([]);
+            }
         }
-    } catch (e) {
-        alert("Fehler beim Sync Start.");
-    } finally {
-        setLoading(false);
-    }
+    } catch (e) { alert("Fehler beim Sync."); } 
+    finally { setLoading(false); }
   };
 
   const handleDeleteSelected = async () => {
     if (selectedUsers.length === 0) return;
-    // Keine Bestätigung mehr nötig oder doch? Du wolltest "Löschen" Button.
-    // Ich mache es sicherheitshalber mit Confirm, falls du dich verklickst.
-    // Aber für "Block" wolltest du kein Confirm. Bei Löschen ist es kritischer.
-    // Ich mache es ohne Confirm wenn du willst, aber Standard ist besser mit.
     if (!window.confirm(`Wirklich ${selectedUsers.length} User endgültig löschen?`)) return;
-
     await fetch(`${API_URL}/delete-users`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ pks: selectedUsers })
     });
-    alert("Gelöscht.");
     setSelectedUsers([]);
     loadData();
   };
@@ -222,7 +231,6 @@ export default function App() {
             body: JSON.stringify({ username })
         });
         const data = await res.json();
-        
         if (data.success) {
             alert(`Erfolg: ${data.message}`);
             setNewTarget("");
@@ -230,11 +238,8 @@ export default function App() {
         } else {
             alert(`Fehler: ${data.error || "Unbekannt"}`);
         }
-    } catch (e) {
-        alert("Verbindungsfehler zum Server.");
-    } finally {
-        setLoading(false);
-    }
+    } catch (e) { alert("Verbindungsfehler."); } 
+    finally { setLoading(false); }
   };
 
   const handleStatusChange = async (pk, newStatus) => {
@@ -266,24 +271,13 @@ export default function App() {
         case 'unfiltered':
             filtered = filtered.filter(u => ['new', 'active', 'changed', 'contacted', 'not_found'].includes(u.status));
             break;
-        case 'favorites':
-            filtered = filtered.filter(u => u.status === 'favorite');
-            break;
-        case 'hidden':
-            filtered = filtered.filter(u => u.status === 'hidden');
-            break;
-        case 'blocked':
-            filtered = filtered.filter(u => u.status === 'blocked');
-            break;
-        case 'email':
-            filtered = filtered.filter(u => u.email && u.status !== 'blocked' && u.status !== 'hidden');
-            break;
+        case 'favorites': filtered = filtered.filter(u => u.status === 'favorite'); break;
+        case 'hidden': filtered = filtered.filter(u => u.status === 'hidden'); break;
+        case 'blocked': filtered = filtered.filter(u => u.status === 'blocked'); break;
+        case 'email': filtered = filtered.filter(u => u.email && u.status !== 'blocked' && u.status !== 'hidden'); break;
         case 'export':
-            if (selectedUsers.length > 0) {
-                filtered = filtered.filter(u => selectedUsers.includes(u.pk));
-            } else {
-                filtered = []; 
-            }
+            if (selectedUsers.length > 0) filtered = filtered.filter(u => selectedUsers.includes(u.pk));
+            else filtered = []; 
             break;
     }
 
@@ -299,11 +293,7 @@ export default function App() {
     return [...filtered].sort((a, b) => {
         let aVal = a[sortConfig.key];
         let bVal = b[sortConfig.key];
-        
-        // Safety checks
-        if (aVal === null || aVal === undefined) aVal = "";
-        if (bVal === null || bVal === undefined) bVal = "";
-
+        if (aVal == null) aVal = ""; if (bVal == null) bVal = "";
         if (typeof aVal === 'string') aVal = aVal.toLowerCase();
         if (typeof bVal === 'string') bVal = bVal.toLowerCase();
         if (aVal < bVal) return sortConfig.direction === 'asc' ? -1 : 1;
@@ -312,48 +302,37 @@ export default function App() {
     });
   }, [users, activeTab, filterText, sortConfig, selectedUsers]);
 
-  // --- SELECTION LOGIC ---
+  // --- SELECTION ---
   const toggleSelectAll = () => {
-    if (selectedUsers.length === processedUsers.length) {
-        setSelectedUsers([]);
-    } else {
-        setSelectedUsers(processedUsers.map(u => u.pk));
-    }
+    if (selectedUsers.length === processedUsers.length) setSelectedUsers([]);
+    else setSelectedUsers(processedUsers.map(u => u.pk));
   };
 
   const toggleSelectUser = (pk) => {
-    if (selectedUsers.includes(pk)) {
-        setSelectedUsers(selectedUsers.filter(id => id !== pk));
-    } else {
-        setSelectedUsers([...selectedUsers, pk]);
-    }
+    if (selectedUsers.includes(pk)) setSelectedUsers(selectedUsers.filter(id => id !== pk));
+    else setSelectedUsers([...selectedUsers, pk]);
   };
 
-  // --- KEYBOARD SHORTCUTS FOR REVIEW MODE ---
+  // --- SHORTCUTS ---
   useEffect(() => {
     if (activeTab !== 'review' || processedUsers.length === 0) return;
-
     const handleKeyDown = (e) => {
         const currentUser = processedUsers[0];
         if (!currentUser) return;
-
         if (e.key === 'ArrowRight') handleStatusChange(currentUser.pk, 'favorite');
         if (e.key === 'ArrowLeft') handleStatusChange(currentUser.pk, 'blocked');
         if (e.key === 'ArrowDown') handleStatusChange(currentUser.pk, 'hidden');
     };
-
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [activeTab, processedUsers]);
 
-
-  // --- RESIZE HANDLE COMPONENT ---
   const ResizeHandle = ({ id }) => (
       <div 
-        className="absolute right-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-purple-400 group flex items-center justify-center"
+        className="absolute right-0 top-0 bottom-0 w-2 cursor-col-resize hover:bg-purple-400 group flex items-center justify-center z-10 opacity-0 hover:opacity-100"
         onMouseDown={(e) => startResize(e, id)}
       >
-          <div className="w-[1px] h-4 bg-slate-300 group-hover:bg-purple-500"></div>
+          <div className="w-[1px] h-full bg-purple-500"></div>
       </div>
   );
 
@@ -361,64 +340,68 @@ export default function App() {
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800 font-sans" style={{ cursor: resizingRef.current ? 'col-resize' : 'auto' }}>
       
+      {!appReady && <Preloader />}
+
       {/* HEADER */}
-      <nav className="bg-white border-b border-slate-200 sticky top-0 z-20 px-6 py-4 flex items-center justify-between shadow-sm">
+      <nav className="bg-white border-b border-slate-200 sticky top-0 z-30 px-4 md:px-6 py-4 flex flex-col md:flex-row items-center justify-between shadow-sm gap-4">
         <div className="flex items-center gap-2">
           <Instagram className="text-purple-600" size={28} />
           <h1 className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-purple-600 to-pink-600">InstaMonitor</h1>
         </div>
         
-        {/* TAB BAR */}
-        <div className="flex gap-2 bg-slate-50 p-1.5 rounded-xl border border-slate-200 overflow-x-auto">
-            <TabButton active={activeTab === 'review'} onClick={() => setActiveTab('review')} label="Review (Speed)" color="pink" icon={<Play size={16}/>} />
-            <div className="w-[1px] bg-slate-300 mx-1"></div>
+        {/* TAB BAR (Responsive Scroll) */}
+        <div className="flex gap-2 bg-slate-50 p-1.5 rounded-xl border border-slate-200 overflow-x-auto w-full md:w-auto no-scrollbar">
+            <TabButton active={activeTab === 'review'} onClick={() => setActiveTab('review')} label="Review" color="pink" icon={<Play size={16}/>} />
+            <div className="w-[1px] bg-slate-300 mx-1 flex-shrink-0"></div>
             <TabButton active={activeTab === 'unfiltered'} onClick={() => setActiveTab('unfiltered')} label="Ungefiltert" count={stats.unfiltered} color="purple"/>
             <TabButton active={activeTab === 'favorites'} onClick={() => setActiveTab('favorites')} label="Favoriten" count={stats.favorites} color="yellow"/>
-            <TabButton active={activeTab === 'email'} onClick={() => setActiveTab('email')} label="Mit Email" count={stats.email} color="blue"/>
+            <TabButton active={activeTab === 'email'} onClick={() => setActiveTab('email')} label="Email" count={stats.email} color="blue"/>
             <TabButton active={activeTab === 'hidden'} onClick={() => setActiveTab('hidden')} label="Versteckt" count={stats.hidden} color="slate"/>
             <TabButton active={activeTab === 'blocked'} onClick={() => setActiveTab('blocked')} label="Blockiert" count={stats.blocked} color="red"/>
-            <TabButton active={activeTab === 'export'} onClick={() => setActiveTab('export')} label="Exportieren" color="green"/>
-            <TabButton active={activeTab === 'add'} onClick={() => setActiveTab('add')} label="Hinzufügen" color="indigo" icon={<UserPlus size={16}/>}/>
+            <TabButton active={activeTab === 'export'} onClick={() => setActiveTab('export')} label="Export" color="green"/>
+            <TabButton active={activeTab === 'add'} onClick={() => setActiveTab('add')} label="+" color="indigo" />
         </div>
 
-        <div className="flex items-center gap-2">
-           <div className="flex bg-slate-100 rounded-lg p-1">
-             <input type="text" placeholder="Neues Ziel..." className="bg-transparent px-3 py-1 outline-none text-sm w-32" value={newTarget} onChange={e => setNewTarget(e.target.value)} />
+        <div className="flex items-center gap-2 w-full md:w-auto">
+           <div className="flex bg-slate-100 rounded-lg p-1 flex-1 md:flex-none">
+             <input type="text" placeholder="Ziel..." className="bg-transparent px-3 py-1 outline-none text-sm w-full md:w-32" value={newTarget} onChange={e => setNewTarget(e.target.value)} />
              <button onClick={handleAddTarget} className="bg-black text-white p-1.5 rounded-md hover:bg-slate-800"><Plus size={16} /></button>
            </div>
            <button onClick={loadData} className="p-2 hover:bg-slate-100 rounded-full"><RefreshCw size={18} /></button>
         </div>
       </nav>
 
-      <main className="w-full px-8 py-6 space-y-6">
+      <main className="w-full px-4 md:px-8 py-6 space-y-6">
         
-        {/* CONTROLS (Nur anzeigen wenn nicht im Review Mode) */}
+        {/* CONTROLS */}
         {activeTab !== 'review' && (
-        <div className="flex justify-between items-center bg-white p-3 rounded-xl shadow-sm border border-slate-200">
-            <div className="flex items-center gap-4">
-                <div className="relative w-72">
+        <div className="flex flex-col md:flex-row justify-between items-center bg-white p-3 rounded-xl shadow-sm border border-slate-200 gap-3">
+            <div className="flex flex-col md:flex-row items-center gap-4 w-full md:w-auto">
+                <div className="relative w-full md:w-72">
                     <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                     <input type="text" placeholder="Suchen..." className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm outline-none focus:border-purple-500" value={filterText} onChange={(e) => setFilterText(e.target.value)} />
                 </div>
                 {selectedUsers.length > 0 && (
-                    <div className="flex items-center gap-2 bg-purple-50 px-3 py-1.5 rounded-lg border border-purple-100 animate-in fade-in">
-                        <span className="text-purple-800 text-sm font-bold">{selectedUsers.length} ausgewählt</span>
-                        <button onClick={handleSyncSelected} className="text-xs bg-purple-600 text-white px-2 py-1 rounded hover:bg-purple-700 flex items-center gap-1">
-                            <RefreshCw size={12}/> Sync Check
-                        </button>
-                        <button onClick={handleGoToExport} className="text-xs bg-green-600 text-white px-2 py-1 rounded hover:bg-green-700 flex items-center gap-1">
-                            <Copy size={12}/> Zum Export
-                        </button>
-                        <button onClick={handleDeleteSelected} className="text-xs bg-red-600 text-white px-2 py-1 rounded hover:bg-red-700 flex items-center gap-1">
-                            <Trash2 size={12}/> Löschen
-                        </button>
+                    <div className="flex items-center gap-2 bg-purple-50 px-3 py-1.5 rounded-lg border border-purple-100 animate-in fade-in w-full md:w-auto justify-between md:justify-start">
+                        <span className="text-purple-800 text-sm font-bold whitespace-nowrap">{selectedUsers.length} markiert</span>
+                        <div className="flex gap-1">
+                            <button onClick={handleSyncSelected} className="text-xs bg-purple-600 text-white px-2 py-1 rounded hover:bg-purple-700 flex items-center gap-1">
+                                <RefreshCw size={12}/> Sync
+                            </button>
+                            <button onClick={handleGoToExport} className="text-xs bg-green-600 text-white px-2 py-1 rounded hover:bg-green-700 flex items-center gap-1">
+                                <Copy size={12}/> Export
+                            </button>
+                            <button onClick={handleDeleteSelected} className="text-xs bg-red-600 text-white px-2 py-1 rounded hover:bg-red-700 flex items-center gap-1">
+                                <Trash2 size={12}/> Del
+                            </button>
+                        </div>
                     </div>
                 )}
             </div>
             {activeJob && (
-                <div className="flex items-center gap-3 bg-blue-50 px-4 py-2 rounded-lg border border-blue-100">
+                <div className="flex items-center gap-3 bg-blue-50 px-4 py-2 rounded-lg border border-blue-100 w-full md:w-auto">
                     <Loader2 size={18} className="animate-spin text-blue-600"/>
-                    <span className="text-sm text-blue-800 font-medium">{activeJob.username}: {activeJob.message}</span>
+                    <span className="text-sm text-blue-800 font-medium truncate">{activeJob.username}: {activeJob.message}</span>
                 </div>
             )}
         </div>
@@ -426,179 +409,142 @@ export default function App() {
 
         {/* --- REVIEW MODE --- */}
         {activeTab === 'add' ? (
-            <div className="flex flex-col items-center justify-center min-h-[50vh] bg-white rounded-2xl shadow-sm border border-slate-200 p-12">
+            <div className="flex flex-col items-center justify-center min-h-[50vh] bg-white rounded-2xl shadow-sm border border-slate-200 p-6 md:p-12">
                 <div className="bg-indigo-100 p-4 rounded-full text-indigo-600 mb-6">
                     <UserPlus size={48} />
                 </div>
                 <h2 className="text-2xl font-bold text-slate-800 mb-2">Manuell User hinzufügen</h2>
                 <p className="text-slate-500 mb-8 text-center max-w-md">
-                    Füge hier einen Instagram-Usernamen ein. Das System holt die Daten (Bio, Follower, etc.) und fügt ihn als "NEU" zur Liste hinzu.
+                    Füge hier einen Instagram-Usernamen ein (ohne @).
                 </p>
-                
                 <div className="flex gap-2 w-full max-w-md">
                     <input 
                         type="text" 
-                        placeholder="Instagram Username (ohne @)" 
-                        className="flex-1 px-4 py-3 border border-slate-300 rounded-lg outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 transition-all"
+                        placeholder="Instagram Username" 
+                        className="flex-1 px-4 py-3 border border-slate-300 rounded-lg outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200"
                         value={newTarget}
                         onChange={e => setNewTarget(e.target.value)}
                         onKeyDown={e => e.key === 'Enter' && handleManualAdd(newTarget)}
                     />
                     <button 
                         onClick={() => handleManualAdd(newTarget)} 
-                        className="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-3 rounded-lg font-bold transition-colors"
+                        className="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-3 rounded-lg font-bold"
                     >
-                        {loading ? <Loader2 className="animate-spin"/> : "Hinzufügen"}
+                        {loading ? <Loader2 className="animate-spin"/> : "Add"}
                     </button>
                 </div>
             </div>
         ) : activeTab === 'review' ? (
             <div className="flex flex-col items-center justify-center min-h-[60vh]">
                 {processedUsers.length > 0 ? (
-                    <div className="bg-white rounded-2xl shadow-xl border border-slate-200 p-8 w-full max-w-2xl text-center relative overflow-hidden">
+                    <div className="bg-white rounded-2xl shadow-xl border border-slate-200 p-6 w-full max-w-lg text-center relative overflow-hidden">
                         <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-purple-500 to-pink-500"></div>
-                        
-                        {/* Source Badge */}
                         <div className="absolute top-4 right-4 bg-slate-100 text-slate-500 text-xs px-2 py-1 rounded-full">
-                            Source: {processedUsers[0].source_account}
+                            Src: {processedUsers[0].source_account}
                         </div>
 
-                        {/* Avatar */}
-                        <div className="w-32 h-32 bg-slate-200 rounded-full mx-auto flex items-center justify-center text-4xl font-bold text-slate-400 mb-6">
+                        <div className="w-24 h-24 bg-slate-200 rounded-full mx-auto flex items-center justify-center text-3xl font-bold text-slate-400 mb-4 mt-4">
                             {processedUsers[0].username[0].toUpperCase()}
                         </div>
 
-                        {/* Name & Link */}
-                        <h2 className="text-3xl font-bold text-slate-800 mb-2">{processedUsers[0].username}</h2>
-                        <div className="text-slate-500 mb-6">{processedUsers[0].full_name}</div>
+                        <h2 className="text-2xl font-bold text-slate-800 mb-1">{processedUsers[0].username}</h2>
+                        <div className="text-slate-500 mb-6 text-sm">{processedUsers[0].full_name}</div>
 
                         {/* TOP ACTION BUTTONS */}
-                        <div className="flex justify-center gap-4 mb-6">
-                            <button 
-                                onClick={() => handleStatusChange(processedUsers[0].pk, 'blocked')}
-                                className="flex flex-col items-center gap-1 p-3 rounded-xl bg-red-50 text-red-600 border border-red-200 hover:bg-red-100 hover:scale-105 transition-all w-24 shadow-sm"
-                                title="Pfeil Links"
-                            >
-                                <Ban size={28}/>
-                                <span className="font-bold text-xs">Block</span>
+                        <div className="flex justify-center gap-3 mb-6">
+                            <button onClick={() => handleStatusChange(processedUsers[0].pk, 'blocked')} className="flex flex-col items-center gap-1 p-2 rounded-xl bg-red-50 text-red-600 border border-red-200 hover:bg-red-100 w-20" title="Block">
+                                <Ban size={24}/> <span className="font-bold text-[10px]">BLOCK</span>
                             </button>
-
-                            <button 
-                                onClick={() => handleStatusChange(processedUsers[0].pk, 'hidden')}
-                                className="flex flex-col items-center gap-1 p-3 rounded-xl bg-slate-100 text-slate-600 border border-slate-200 hover:bg-slate-200 hover:scale-105 transition-all w-24 shadow-sm"
-                                title="Pfeil Runter"
-                            >
-                                <EyeOff size={28}/>
-                                <span className="font-bold text-xs">Hide</span>
+                            <button onClick={() => handleStatusChange(processedUsers[0].pk, 'hidden')} className="flex flex-col items-center gap-1 p-2 rounded-xl bg-slate-100 text-slate-600 border border-slate-200 hover:bg-slate-200 w-20" title="Hide">
+                                <EyeOff size={24}/> <span className="font-bold text-[10px]">HIDE</span>
                             </button>
-
-                            <button 
-                                onClick={() => handleStatusChange(processedUsers[0].pk, 'favorite')}
-                                className="flex flex-col items-center gap-1 p-3 rounded-xl bg-yellow-100 text-yellow-600 border border-yellow-200 hover:bg-yellow-200 hover:scale-105 transition-all w-24 shadow-sm"
-                                title="Pfeil Rechts"
-                            >
-                                <Heart size={28} className="fill-yellow-600"/>
-                                <span className="font-bold text-xs">Fav</span>
+                            <button onClick={() => handleStatusChange(processedUsers[0].pk, 'favorite')} className="flex flex-col items-center gap-1 p-2 rounded-xl bg-yellow-100 text-yellow-600 border border-yellow-200 hover:bg-yellow-200 w-20" title="Fav">
+                                <Heart size={24} className="fill-yellow-600"/> <span className="font-bold text-[10px]">FAV</span>
                             </button>
                         </div>
 
-                        {/* Bio */}
-                        <div className="bg-slate-50 p-8 rounded-xl border border-slate-100 mb-8 text-center">
-                            <p className="whitespace-pre-wrap text-slate-700 italic text-lg leading-relaxed mb-6 max-h-60 overflow-y-auto">{processedUsers[0].bio || "Keine Biografie"}</p>
+                        <div className="bg-slate-50 p-6 rounded-xl border border-slate-100 mb-6 text-center">
+                            <p className="whitespace-pre-wrap text-slate-700 italic text-sm leading-relaxed mb-4 max-h-40 overflow-y-auto">{processedUsers[0].bio || "-"}</p>
                             
                             {processedUsers[0].external_url && (
-                                <div className="mb-4">
-                                    <a href={processedUsers[0].external_url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 text-blue-600 font-bold bg-blue-50 px-4 py-2 rounded-full hover:underline">
-                                        <Globe size={18}/> {processedUsers[0].external_url.replace(/^https?:\/\//, '')}
-                                    </a>
-                                </div>
+                                <a href={processedUsers[0].external_url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-blue-600 font-bold bg-blue-50 px-3 py-1 rounded-full text-xs hover:underline mb-2">
+                                    <Globe size={14}/> Link
+                                </a>
                             )}
-
-                            {processedUsers[0].email && (
-                                <div className="inline-flex items-center gap-2 text-purple-600 font-bold bg-purple-50 px-4 py-2 rounded-full mb-6">
-                                    <Mail size={18}/> {processedUsers[0].email}
-                                </div>
-                            )}
-
-                            <div className="flex justify-center">
-                                <a 
-                                    href={`https://instagram.com/${processedUsers[0].username}`} 
-                                    target="_blank"
-                                    rel="noreferrer" 
-                                    className="flex items-center gap-2 bg-gradient-to-r from-purple-600 to-pink-600 text-white px-8 py-3 rounded-full text-lg font-bold hover:opacity-90 shadow-lg transition-transform hover:scale-105"
-                                >
-                                    <Instagram size={24}/> Profil auf Instagram öffnen
+                            
+                            <div className="flex justify-center mt-4">
+                                <a href={`https://instagram.com/${processedUsers[0].username}`} target="_blank" rel="noreferrer" className="flex items-center gap-2 bg-gradient-to-r from-purple-600 to-pink-600 text-white px-6 py-2 rounded-full text-sm font-bold hover:opacity-90 shadow-md">
+                                    <Instagram size={18}/> Profil öffnen
                                 </a>
                             </div>
                         </div>
-
                     </div>
                 ) : (
                     <div className="text-center p-12 bg-white rounded-2xl shadow-sm border border-slate-200">
-                        <div className="text-6xl mb-4">🎉</div>
-                        <h2 className="text-2xl font-bold text-slate-800 mb-2">Alles erledigt!</h2>
-                        <p className="text-slate-500">Keine ungefilterten User mehr vorhanden.</p>
-                        <button onClick={() => setActiveTab('favorites')} className="mt-6 text-purple-600 font-bold hover:underline">Zu den Favoriten gehen</button>
+                        <div className="text-4xl mb-4">🎉</div>
+                        <h2 className="text-xl font-bold text-slate-800 mb-2">Alles erledigt!</h2>
+                        <button onClick={() => setActiveTab('favorites')} className="mt-4 text-purple-600 font-bold hover:underline">Zu Favoriten</button>
                     </div>
                 )}
             </div>
         ) : activeTab === 'export' ? (
-            <div className="bg-white p-8 rounded-xl shadow-sm border border-slate-200">
-                <h2 className="text-xl font-bold mb-4 flex items-center gap-2"><Copy size={24}/> Export Ansicht</h2>
-                <p className="text-slate-500 mb-4">Hier sind die Usernamen der aktuell ausgewählten / gefilterten Liste zum Kopieren.</p>
-                <textarea 
-                    readOnly
-                    className="w-full h-64 p-4 bg-slate-50 border border-slate-200 rounded-lg font-mono text-sm focus:outline-none"
-                    value={processedUsers.map(u => u.username).join('\n')}
-                />
-                <div className="mt-4 flex gap-3">
-                    <button 
-                        onClick={() => {
+            <div className="bg-white p-6 md:p-8 rounded-xl shadow-sm border border-slate-200">
+                <h2 className="text-xl font-bold mb-4 flex items-center gap-2"><Copy size={24}/> Export</h2>
+                <textarea readOnly className="w-full h-64 p-4 bg-slate-50 border border-slate-200 rounded-lg font-mono text-sm focus:outline-none" value={processedUsers.map(u => u.username).join('\n')} />
+                <div className="mt-4 flex gap-3 flex-wrap">
+                    <button onClick={() => {
                             navigator.clipboard.writeText(processedUsers.map(u => u.username).join('\n'));
-                            setCopySuccess(true);
-                            setTimeout(() => setCopySuccess(false), 2000);
+                            setCopySuccess(true); setTimeout(() => setCopySuccess(false), 2000);
                             handleMarkExported(processedUsers.map(u => u.username));
-                        }}
-                        className="bg-green-600 hover:bg-green-700 text-white px-6 py-2 rounded-lg font-bold flex items-center gap-2"
-                        disabled={processedUsers.length === 0}
-                    >
-                        {copySuccess ? <Check size={20}/> : <Copy size={20}/>}
-                        {copySuccess ? "Kopiert!" : "Kopieren & Als Exportiert markieren"}
+                        }} className="bg-green-600 hover:bg-green-700 text-white px-6 py-2 rounded-lg font-bold flex items-center gap-2" disabled={processedUsers.length === 0}>
+                        {copySuccess ? <Check size={20}/> : <Copy size={20}/>} Kopieren
                     </button>
                     <button onClick={() => setSelectedUsers([])} className="bg-slate-200 hover:bg-slate-300 text-slate-700 px-6 py-2 rounded-lg font-bold flex items-center gap-2" disabled={selectedUsers.length === 0}>
-                        <Trash2 size={20}/> Liste leeren
+                        <Trash2 size={20}/> Leeren
                     </button>
                 </div>
             </div>
         ) : (
-            <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-x-auto">
-                <table className="w-full text-left table-fixed">
+            // TABLE VIEW (Mobile Card / Desktop Table)
+            <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-x-auto relative">
+                
+                {/* Mobile View (Cards) */}
+                <div className="md:hidden space-y-4 p-4">
+                    {processedUsers.map((user) => {
+                        const isSelected = selectedUsers.includes(user.pk);
+                        return (
+                            <div key={user.pk} className={`border rounded-lg p-4 shadow-sm ${isSelected ? 'bg-purple-50 border-purple-200' : 'bg-white'}`}>
+                                <div className="flex justify-between items-start mb-2">
+                                    <div className="flex items-center gap-3">
+                                        <input type="checkbox" checked={isSelected} onChange={() => toggleSelectUser(user.pk)} className="w-5 h-5 rounded accent-purple-600"/>
+                                        <div className="font-bold text-lg">{user.username}</div>
+                                    </div>
+                                    <div className="flex gap-1">
+                                        <button onClick={() => handleStatusChange(user.pk, user.status === 'favorite' ? 'active' : 'favorite')} className="p-2 bg-white border rounded text-yellow-500"><Heart size={16} className={user.status === 'favorite' ? 'fill-yellow-500' : ''}/></button>
+                                        <button onClick={() => handleStatusChange(user.pk, 'blocked')} className="p-2 bg-white border rounded text-red-500"><Ban size={16}/></button>
+                                    </div>
+                                </div>
+                                <div className="text-sm text-slate-600 mb-2 whitespace-pre-wrap line-clamp-3">{user.bio}</div>
+                                {user.external_url && <a href={user.external_url} target="_blank" className="text-blue-600 text-xs block mb-1 truncate"><Globe size={12} className="inline"/> Link</a>}
+                                <div className="flex justify-between items-center text-xs text-slate-400 mt-3 border-t pt-2">
+                                    <span>{user.followers_count?.toLocaleString()} Follower</span>
+                                    <span>{formatDate(user.found_date)}</span>
+                                </div>
+                            </div>
+                        )
+                    })}
+                </div>
+
+                {/* Desktop Table */}
+                <table className="w-full text-left table-fixed hidden md:table">
                     <thead className="bg-slate-50 text-slate-500 font-bold border-b border-slate-200 uppercase tracking-wider text-sm">
                         <tr>
-                            <th className="p-4 relative" style={{ width: colWidths.select }}>
-                                <input type="checkbox" checked={selectedUsers.length === processedUsers.length && processedUsers.length > 0} onChange={toggleSelectAll} className="w-4 h-4 rounded accent-purple-600"/>
-                                <ResizeHandle id="select"/>
-                            </th>
-                            <th className="p-4 relative hover:bg-slate-100" style={{ width: colWidths.user }}>
-                                <div className="flex items-center gap-2 cursor-pointer" onClick={() => requestSort('username')}>User <ArrowUpDown size={14} className="opacity-50"/></div>
-                                <ResizeHandle id="user"/>
-                            </th>
-                            <th className="p-4 relative" style={{ width: colWidths.actions }}>
-                                Aktionen
-                                <ResizeHandle id="actions"/>
-                            </th>
-                            <th className="p-4 relative" style={{ width: colWidths.bio }}>
-                                Bio & Email
-                                <ResizeHandle id="bio"/>
-                            </th>
-                            <th className="p-4 relative hover:bg-slate-100" style={{ width: colWidths.follower }}>
-                                <div className="flex items-center gap-2 cursor-pointer" onClick={() => requestSort('followers_count')}>Follower <ArrowUpDown size={14} className="opacity-50"/></div>
-                                <ResizeHandle id="follower"/>
-                            </th>
-                            <th className="p-4 relative hover:bg-slate-100" style={{ width: colWidths.date }}>
-                                <div className="flex items-center gap-2 cursor-pointer" onClick={() => requestSort('found_date')}>Datum <ArrowUpDown size={14} className="opacity-50"/></div>
-                                <ResizeHandle id="date"/>
-                            </th>
+                            <th className="p-4 relative w-12"><input type="checkbox" checked={selectedUsers.length === processedUsers.length && processedUsers.length > 0} onChange={toggleSelectAll} className="w-4 h-4 rounded accent-purple-600"/><ResizeHandle id="select"/></th>
+                            <th className="p-4 relative hover:bg-slate-100" style={{ width: colWidths.user }}>User <ResizeHandle id="user"/></th>
+                            <th className="p-4 relative" style={{ width: colWidths.actions }}>Aktionen <ResizeHandle id="actions"/></th>
+                            <th className="p-4 relative" style={{ width: colWidths.bio }}>Bio <ResizeHandle id="bio"/></th>
+                            <th className="p-4 relative hover:bg-slate-100" style={{ width: colWidths.follower }}>Follower <ResizeHandle id="follower"/></th>
+                            <th className="p-4 relative hover:bg-slate-100" style={{ width: colWidths.date }}>Datum <ResizeHandle id="date"/></th>
                         </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 text-base">
@@ -606,11 +552,8 @@ export default function App() {
                             const isSelected = selectedUsers.includes(user.pk);
                             const isFavorite = user.status === 'favorite';
                             return (
-                                <tr key={user.pk} className={`group transition-colors 
-                                    ${isSelected ? 'bg-purple-50' : 'hover:bg-slate-50'}
-                                    ${isFavorite ? 'bg-yellow-50' : ''}
-                                `}>
-                                    <td className="p-4 align-top truncate"><input type="checkbox" checked={isSelected} onChange={() => toggleSelectUser(user.pk)} className="w-4 h-4 rounded accent-purple-600 mt-2"/></td>
+                                <tr key={user.pk} className={`group transition-colors ${isSelected ? 'bg-purple-50' : 'hover:bg-slate-50'} ${isFavorite ? 'bg-yellow-50' : ''}`}>
+                                    <td className="p-4 align-top"><input type="checkbox" checked={isSelected} onChange={() => toggleSelectUser(user.pk)} className="w-4 h-4 rounded accent-purple-600 mt-2"/></td>
                                     
                                     <td className="p-4 align-top overflow-hidden">
                                         <div className="flex items-center gap-3">
@@ -639,14 +582,11 @@ export default function App() {
                                     <td className="p-4 align-top">
                                         {user.status === 'changed' && <div className="mb-1 text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded inline-block">Update: {user.change_details}</div>}
                                         <div className="text-slate-600 text-sm whitespace-pre-wrap break-words">{user.bio}</div>
-                                        
-                                        {/* External URL */}
                                         {user.external_url && (
                                             <a href={user.external_url} target="_blank" rel="noreferrer" className="mt-2 flex items-center gap-1 text-blue-600 font-bold text-xs hover:underline bg-blue-50 px-2 py-1 rounded w-fit max-w-full truncate">
                                                 <Globe size={12}/> {user.external_url.replace(/^https?:\/\//, '')}
                                             </a>
                                         )}
-
                                         {user.email && <div className="mt-2 flex items-center gap-1 text-purple-700 font-bold text-xs"><Mail size={12}/> {user.email}</div>}
                                     </td>
 
