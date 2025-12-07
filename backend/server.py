@@ -82,7 +82,7 @@ def scrape_target_logic(target_username, mode="scan"):
     mode='sync': Auch existierende auf Änderungen prüfen (für TARGETS)
     """
     global JOBS
-    print(f"🚀 Starte Scraping für: {target_username} (Modus: {mode})")
+    print(f"DEBUG: Starte Scraping fuer: {target_username} (Modus: {mode})")
     
     JOBS[target_username] = {
         'status': 'starting', 
@@ -97,13 +97,21 @@ def scrape_target_logic(target_username, mode="scan"):
     
     # 1. Target ID holen
     try:
+        print(f"DEBUG: Rufe HikerAPI für {target_username}...") # DEBUG
         target_info = cl.user_by_username_v1(target_username)
-        target_id = target_info['pk']
+        
+        if not target_info:
+             raise Exception("Keine Daten von API erhalten (User nicht gefunden oder API Fehler)")
+
+        target_id = target_info.get('pk')
+        if not target_id:
+             raise Exception(f"Keine PK gefunden in Antwort: {target_info}")
+
         follower_count_total = target_info.get('follower_count', 0)
         JOBS[target_username].update({'status': 'running', 'total_followers': follower_count_total, 'message': 'Lade Follower...'})
     except Exception as e:
-        print(f"❌ Target nicht gefunden: {e}")
-        JOBS[target_username] = {'status': 'error', 'message': f'Target nicht gefunden: {str(e)}'}
+        print(f"Target Fehler: {e}")
+        JOBS[target_username] = {'status': 'error', 'message': f'Fehler: {str(e)}'}
         return
 
     # 2. Followings laden (GQL Chunk)
@@ -176,7 +184,7 @@ def scrape_target_logic(target_username, mode="scan"):
     
     JOBS[target_username]['status'] = 'finished'
     JOBS[target_username]['message'] = 'Fertig!'
-    print(f"✅ Fertig mit {target_username}")
+    print(f"Fertig mit {target_username}")
 
 def sync_single_lead(client, cursor, existing_row):
     """Prüft einen einzelnen Lead auf Updates"""
@@ -231,7 +239,7 @@ def sync_single_lead(client, cursor, existing_row):
         return False
 
 def sync_specific_users_logic(usernames):
-    print(f"🔄 Starte Sync für {len(usernames)} User...")
+    print(f"Starte Sync fuer {len(usernames)} User...")
     cl = Client(token=API_KEY)
     conn = get_db()
     c = conn.cursor()
@@ -244,7 +252,7 @@ def sync_specific_users_logic(usernames):
             conn.commit()
     
     conn.close()
-    print("✅ Sync fertig.")
+    print("Sync fertig.")
 
 # --- API ENDPOINTS ---
 
