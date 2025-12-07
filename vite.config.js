@@ -5,17 +5,15 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   plugins: [react()],
   server: {
-    port: 5173,
-    strictPort: true, // Fail if port is busy
-    // Deaktiviere HMR über Netzwerk (verhindert lokale Netzwerk-Suche)
-    hmr: {
-      clientPort: 5173
-    },
-    allowedHosts: true // Erlaubt alle Hosts (wichtig für Replit)
-  },
-  build: {
-    // Stelle sicher, dass keine Development-Features im Build sind
-    minify: 'esbuild',
-    sourcemap: false
+    host: '0.0.0.0',
+    allowedHosts: true, // WICHTIG für Replit!
+    // Der Proxy leitet alle /api Anfragen an dein Python Backend weiter
+    proxy: {
+      '/api': {
+        target: 'http://127.0.0.1:8000', // Python läuft auf Port 8000
+        changeOrigin: true,
+        secure: false,
+      }
+    }
   }
 })

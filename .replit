@@ -30,14 +30,14 @@ waitForPort = 5000
 outputType = "webview"
 
 [[ports]]
-localPort = 5000
+localPort = 8000
 externalPort = 80
 
 [[ports]]
-localPort = 8000
-externalPort = 8000
+localPort = 5173
+externalPort = 5173
 
 [deployment]
 deploymentTarget = "vm"
-run = ["bash", "-c", "cd backend && python -c 'from server import init_db; init_db()' && gunicorn --bind 0.0.0.0:5000 --workers 2 --timeout 120 --access-logfile - --error-logfile - server:app"]
+run = ["bash", "-c", "cd backend && python -c 'from server import init_db; init_db()' && gunicorn --bind 0.0.0.0:8000 --workers 2 --timeout 120 --access-logfile - --error-logfile - server:app"]
 build = ["npm", "run", "build"]
