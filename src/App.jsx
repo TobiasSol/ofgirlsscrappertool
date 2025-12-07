@@ -447,8 +447,21 @@ export default function App() {
                             {processedUsers[0].username[0].toUpperCase()}
                         </div>
 
-                        <h2 className="text-2xl font-bold text-slate-800 mb-1">{processedUsers[0].username}</h2>
-                        <div className="text-slate-500 mb-6 text-sm">{processedUsers[0].full_name}</div>
+                        <a 
+                            href={`https://instagram.com/${processedUsers[0].username}`} 
+                            target="_blank" 
+                            rel="noreferrer" 
+                            className="text-2xl font-bold text-slate-800 mb-1 hover:text-purple-600 hover:underline block"
+                        >
+                            {processedUsers[0].username}
+                        </a>
+                        
+                        <div className="text-slate-500 mb-4 flex flex-col items-center">
+                            <span className="text-sm">{processedUsers[0].full_name}</span>
+                            <span className="text-blue-600 font-bold mt-1 text-xs bg-blue-50 px-3 py-1 rounded-full border border-blue-100">
+                                {processedUsers[0].followers_count?.toLocaleString()} Follower
+                            </span>
+                        </div>
 
                         {/* TOP ACTION BUTTONS */}
                         <div className="flex justify-center gap-3 mb-6">
@@ -467,8 +480,13 @@ export default function App() {
                             <p className="whitespace-pre-wrap text-slate-700 italic text-sm leading-relaxed mb-4 max-h-40 overflow-y-auto">{processedUsers[0].bio || "-"}</p>
                             
                             {processedUsers[0].external_url && (
-                                <a href={processedUsers[0].external_url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-blue-600 font-bold bg-blue-50 px-3 py-1 rounded-full text-xs hover:underline mb-2">
-                                    <Globe size={14}/> Link
+                                <a 
+                                    href={processedUsers[0].external_url} 
+                                    target="_blank" 
+                                    rel="noreferrer" 
+                                    className="inline-flex items-center gap-1 text-blue-600 font-bold bg-blue-50 px-4 py-2 rounded-full text-sm hover:underline mb-2 border border-blue-100"
+                                >
+                                    <Globe size={16}/> Link öffnen: <span className="underline">{processedUsers[0].external_url.replace(/^https?:\/\//, '')}</span>
                                 </a>
                             )}
                             
