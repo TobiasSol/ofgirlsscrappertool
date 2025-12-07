@@ -34,5 +34,14 @@ localPort = 5000
 externalPort = 80
 
 [[ports]]
+localPort = 8000
+externalPort = 8000
+
+[[ports]]
 localPort = 41745
 externalPort = 3000
+
+[deployment]
+deploymentTarget = "vm"
+run = ["bash", "-c", "concurrently \"npx vite preview\" \"cd backend && python server.py\" --names \"FRONTEND,BACKEND\" --prefix-colors \"cyan,yellow\""]
+build = ["npm", "run", "build"]
