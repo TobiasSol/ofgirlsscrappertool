@@ -156,14 +156,33 @@ export default function App() {
 
   const handleSyncSelected = async () => {
     if (selectedUsers.length === 0) return alert("Bitte User auswählen!");
+    
     const usernames = users.filter(u => selectedUsers.includes(u.pk)).map(u => u.username);
-    await fetch(`${API_URL}/sync-users`, {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ usernames })
-    });
-    alert(`Sync für ${usernames.length} User gestartet!`);
-    setSelectedUsers([]);
+    setLoading(true); 
+
+    try {
+        const res = await fetch(`${API_URL}/sync-users`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ usernames })
+        });
+        const data = await res.json();
+        
+        if (data.success && data.job_id) {
+            // Job ID setzen -> Polling startet automatisch (siehe useEffect[activeJob])
+            // Wir müssen das Format anpassen, da der Poller username erwartet?
+            // Nein, der Poller ruft /api/job-status/<username> auf.
+            // Unser Job-ID ist jetzt aber "sync_...". Das Backend muss das handeln.
+            // Backend endpoint /api/job-status/<username> nimmt alles was in JOBS ist.
+            // Also: username = job_id.
+            setActiveJob({ username: data.job_id, status: 'running', found: 0, message: 'Startet...' });
+            setSelectedUsers([]);
+        }
+    } catch (e) {
+        alert("Fehler beim Sync Start.");
+    } finally {
+        setLoading(false);
+    }
   };
 
   const handleDeleteSelected = async () => {

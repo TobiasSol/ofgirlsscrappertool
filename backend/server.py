@@ -161,36 +161,40 @@ def sync_single_lead(client, cursor, existing_row):
     username = existing_row['username']
     pk = existing_row['pk']
     try:
-        # NUTZE ID STATT USERNAME FÜR FRISCHERE DATEN
-        # Fallback auf Username wenn PK fehlt (sollte nicht passieren)
-        if pk:
-            details = client.user_by_id_v1(pk)
-        else:
-            details = client.user_by_username_v1(username)
+        # FIX: Wir nutzen ZWINGEND user_by_username_v1, da user_by_id_v1 oft veraltete Daten liefert.
+        # Das entspricht exakt der Logik beim "Neu Hinzufügen".
+        details = client.user_by_username_v1(username)
         
+        if not details:
+            print(f"Keine Details für {username} gefunden.")
+            return False
+
         new_bio = details.get('biography', '')
         new_followers = details.get('follower_count', 0)
         new_email = details.get('public_email', '') or extract_email(new_bio)
         new_external_url = details.get('external_url', '')
 
         # DEBUG PRINTS
-        print(f"--- Sync Check: {username} (ID: {pk}) ---")
-        print(f"DB Bio: {existing_row['bio'][:30]}...")
-        print(f"API Bio: {new_bio[:30]}...")
+        print(f"--- Sync: {username} ---")
+        print(f"OLD Bio: {existing_row['bio']}")
+        print(f"NEW Bio: {new_bio}")
+        print(f"NEW Url: {new_external_url}")
         
         changes = []
+        # Update erzwingen, auch wenn gleich
         if new_bio != existing_row['bio']: 
-            changes.append("Bio geaendert")
-            print("-> Bio Change erkannt!")
-            
+            changes.append("Bio neu")
+        
+        if new_external_url != existing_row['external_url']:
+            changes.append("Link neu")
+
         old_followers = existing_row['followers_count'] or 0
         if abs(new_followers - old_followers) > 10: 
             changes.append(f"Follower: {old_followers}->{new_followers}")
 
-        # Status Update: Wenn vorher 'not_found', jetzt wieder da -> 'active'
         new_status = existing_row['status']
         if existing_row['status'] == 'not_found': new_status = 'active'
-        if changes: new_status = 'changed'
+        if changes and new_status != 'blocked': new_status = 'changed'
 
         change_str = ", ".join(changes) if changes else existing_row['change_details']
 
@@ -199,12 +203,9 @@ def sync_single_lead(client, cursor, existing_row):
                         WHERE pk=?''',
                         (new_bio, new_email, new_followers, datetime.now().isoformat(), new_status, change_str, new_external_url, details.get('full_name', ''), pk))
         
-        time.sleep(0.5) 
         return True
     except Exception as e:
-        print(f"User {username} nicht gefunden (Sync): {e}")
-        cursor.execute("UPDATE leads SET status=?, change_details=? WHERE pk=?", 
-                        ('not_found', 'Profil nicht mehr aufrufbar', pk))
+        print(f"Fehler bei {username}: {e}")
         return False
 
 def sync_specific_users_logic(usernames):
@@ -264,12 +265,43 @@ def sync_all():
 
 @app.route('/api/sync-users', methods=['POST'])
 def sync_users_endpoint():
-    # Sync Specific Users
     usernames = request.json.get('usernames', [])
     if not usernames: return jsonify({"error": "No usernames"}), 400
     
-    threading.Thread(target=sync_specific_users_logic, args=(usernames,)).start()
-    return jsonify({"message": f"Sync für {len(usernames)} User gestartet."})
+    # Job ID erstellen (z.B. "sync_12345")
+    job_id = f"sync_{int(time.time())}"
+    
+    # Job initialisieren
+    JOBS[job_id] = {
+        'status': 'running',
+        'found': 0,
+        'total': len(usernames),
+        'message': 'Starte Sync...'
+    }
+
+    def run_sync_job(job_id, users):
+        processed = 0
+        cl = Client(token=API_KEY)
+        conn = get_db()
+        c = conn.cursor()
+        
+        for u in users:
+            c.execute("SELECT * FROM leads WHERE username=?", (u,))
+            row = c.fetchone()
+            if row:
+                sync_single_lead(cl, c, row)
+                conn.commit()
+            processed += 1
+            JOBS[job_id]['found'] = processed
+            JOBS[job_id]['message'] = f'Pruefe {u} ({processed}/{len(users)})'
+        
+        conn.close()
+        JOBS[job_id]['status'] = 'finished'
+        JOBS[job_id]['message'] = 'Fertig.'
+
+    threading.Thread(target=run_sync_job, args=(job_id, usernames)).start()
+    
+    return jsonify({"success": True, "job_id": job_id})
 
 def add_lead_logic(username):
     print(f"Versuche manuell hinzuzufuegen: {username}")
