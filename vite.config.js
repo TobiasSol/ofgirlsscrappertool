@@ -10,7 +10,8 @@ export default defineConfig({
     // Deaktiviere HMR über Netzwerk (verhindert lokale Netzwerk-Suche)
     hmr: {
       clientPort: 5173
-    }
+    },
+    allowedHosts: true // Erlaubt alle Hosts (wichtig für Replit)
   },
   build: {
     // Stelle sicher, dass keine Development-Features im Build sind
