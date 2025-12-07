@@ -239,7 +239,10 @@ def sync_specific_users_logic(usernames):
 
 @app.route('/api/login', methods=['POST'])
 def login():
-    return jsonify({"success": True, "token": "session_valid"})
+    data = request.json
+    if data.get('password') == APP_PASSWORD:
+        return jsonify({"success": True, "token": "session_valid"})
+    return jsonify({"success": False}), 401
 
 @app.route('/api/users', methods=['GET'])
 def get_users():
@@ -407,4 +410,4 @@ def update_status():
 
 if __name__ == '__main__':
     init_db()
-    app.run(host='0.0.0.0', port=8000)
+    app.run(host='0.0.0.0', port=5000)

@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   Search, RefreshCw, Trash2, Mail, Instagram, 
-  CheckCircle, AlertCircle, Plus, Lock, EyeOff, Activity, ArrowUpDown, XCircle, Loader2, Ban, Heart, Copy, Check, GripVertical, Play, ExternalLink, Globe, UserPlus, Menu
+  CheckCircle, AlertCircle, Plus, Lock, EyeOff, Activity, ArrowUpDown, XCircle, Loader2, Ban, Heart, Copy, Check, GripVertical, Play, ExternalLink, Globe, UserPlus, Menu, LogOut
 } from 'lucide-react';
 
-const API_URL = "/api"; 
+const API_URL = "http://localhost:5000/api"; 
 
 // --- HELPER ---
 const formatDate = (isoString) => {
@@ -33,7 +33,7 @@ const TabButton = ({ active, label, count, onClick, color = "purple", icon }) =>
 
 // --- PRELOADER COMPONENT ---
 const Preloader = () => (
-    <div className="fixed inset-0 bg-white z-50 flex flex-col items-center justify-center animate-out fade-out duration-500 fill-mode-forwards" style={{animationDelay: '1.5s', pointerEvents: 'none'}}>
+    <div className="fixed inset-0 bg-white z-[100] flex flex-col items-center justify-center animate-out fade-out duration-500 fill-mode-forwards" style={{animationDelay: '1.5s', pointerEvents: 'none'}}>
         <div className="relative mb-4">
             <Instagram size={64} className="text-purple-600 animate-bounce" />
             <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 w-12 h-1 bg-black/10 rounded-full blur-sm animate-pulse"></div>
@@ -45,9 +45,26 @@ const Preloader = () => (
 );
 
 export default function App() {
-  const [isAuthenticated, setIsAuthenticated] = useState(true);
+  // Start: Immer erst ausgeloggt (false), dann prüfen wir LocalStorage
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [password, setPassword] = useState("");
   const [appReady, setAppReady] = useState(false); // Für Preloader
+  
+  // Auth Check beim Start
+  useEffect(() => {
+      const loggedIn = localStorage.getItem('isLoggedIn') === 'true';
+      if (loggedIn) {
+          setIsAuthenticated(true);
+      }
+      // App ist "bereit" (Preloader weg), sobald wir wissen, ob eingeloggt oder nicht
+      // Aber wir wollen Preloader nur zeigen, wenn wir daten laden?
+      // Ne, Preloader weg, sobald wir wissen was Phase ist.
+      // Wenn eingeloggt -> loadData kümmert sich um Preloader-Ende.
+      // Wenn NICHT eingeloggt -> sofort Preloader weg.
+      if (!loggedIn) {
+          setAppReady(true);
+      }
+  }, []);
   
   // Data
   const [users, setUsers] = useState([]);
@@ -137,8 +154,10 @@ export default function App() {
   useEffect(() => { 
       if (isAuthenticated) {
           loadData().then(() => {
-              setTimeout(() => setAppReady(true), 1500); // Künstliche Pause für den Effekt
+              setTimeout(() => setAppReady(true), 1500); 
           });
+      } else {
+          setAppReady(true);
       }
   }, [isAuthenticated]);
 
@@ -240,6 +259,14 @@ export default function App() {
         }
     } catch (e) { alert("Verbindungsfehler."); } 
     finally { setLoading(false); }
+  };
+
+  const handleLogout = () => {
+      // Debugging
+      console.log("Logout clicked");
+      localStorage.removeItem('isLoggedIn');
+      setIsAuthenticated(false);
+      // Kein Reload, React soll sofort umschalten
   };
 
   const handleStatusChange = async (pk, newStatus) => {
@@ -367,7 +394,14 @@ export default function App() {
              <input type="text" placeholder="Ziel..." className="bg-transparent px-3 py-1 outline-none text-sm w-full md:w-32" value={newTarget} onChange={e => setNewTarget(e.target.value)} />
              <button onClick={handleAddTarget} className="bg-black text-white p-1.5 rounded-md hover:bg-slate-800"><Plus size={16} /></button>
            </div>
-           <button onClick={loadData} className="p-2 hover:bg-slate-100 rounded-full"><RefreshCw size={18} /></button>
+           <button onClick={loadData} className="p-2 hover:bg-slate-100 rounded-full relative z-50"><RefreshCw size={18} /></button>
+           <button 
+                onClick={handleLogout} 
+                className="bg-red-50 hover:bg-red-100 text-red-600 p-2 rounded-full cursor-pointer relative z-50 transition-colors" 
+                title="Ausloggen"
+           >
+               <LogOut size={18}/>
+           </button>
         </div>
       </nav>
 
