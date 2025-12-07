@@ -1,1 +1,14 @@
-node_modules
+# Datenbanken ignorieren
+*.db
+*.sqlite3
+backend/*.db
+
+# Python Müll ignorieren
+__pycache__/
+*.py[cod]
+venv/
+.env
+
+# Node Müll ignorieren
+node_modules/
+dist/
