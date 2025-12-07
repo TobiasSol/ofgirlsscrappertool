@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   Search, RefreshCw, Trash2, Mail, Instagram, 
-  CheckCircle, AlertCircle, Plus, Lock, EyeOff, Activity, ArrowUpDown, XCircle, Loader2, Ban, Heart, Copy, Check, GripVertical, Play, ExternalLink, Globe, UserPlus, Menu
+  CheckCircle, AlertCircle, Plus, Lock, EyeOff, Activity, ArrowUpDown, XCircle, Loader2, Ban, Heart, Copy, Check, GripVertical, Play, ExternalLink, Globe, UserPlus, Menu, LogOut
 } from 'lucide-react';
 
 const API_URL = "/api"; 
@@ -45,9 +45,14 @@ const Preloader = () => (
 );
 
 export default function App() {
-  const [isAuthenticated, setIsAuthenticated] = useState(true);
+  // FIX: Prüfe beim Start, ob wir schon eingeloggt waren (localStorage)
+  const [isAuthenticated, setIsAuthenticated] = useState(() => {
+      return localStorage.getItem('insta_auth') === 'true';
+  });
+  
   const [password, setPassword] = useState("");
-  const [appReady, setAppReady] = useState(false); // Für Preloader
+  const [loginError, setLoginError] = useState(false);
+  const [appReady, setAppReady] = useState(false); 
   
   // Data
   const [users, setUsers] = useState([]);
@@ -121,6 +126,42 @@ export default function App() {
     };
   }, [users]);
 
+  // --- LOGIN LOGIC ---
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    setLoginError(false);
+    try {
+      const res = await fetch(`${API_URL}/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setIsAuthenticated(true);
+        localStorage.setItem('insta_auth', 'true'); // Session speichern
+        loadData();
+      } else {
+        setLoginError(true);
+      }
+    } catch (err) {
+      console.error(err);
+      // Fallback für Local Dev ohne Backend
+      if(password === "Tobideno85!") {
+          setIsAuthenticated(true);
+          localStorage.setItem('insta_auth', 'true');
+      } else {
+          setLoginError(true);
+      }
+    }
+  };
+
+  const handleLogout = () => {
+      setIsAuthenticated(false);
+      localStorage.removeItem('insta_auth');
+      setPassword("");
+  };
+
   // --- DATA LOADING ---
   const loadData = async () => {
     setLoading(true);
@@ -137,7 +178,7 @@ export default function App() {
   useEffect(() => { 
       if (isAuthenticated) {
           loadData().then(() => {
-              setTimeout(() => setAppReady(true), 1500); // Künstliche Pause für den Effekt
+              setTimeout(() => setAppReady(true), 1500); 
           });
       }
   }, [isAuthenticated]);
@@ -336,6 +377,43 @@ export default function App() {
       </div>
   );
 
+  // --- LOGIN SCREEN ---
+  if (!isAuthenticated) {
+    return (
+      <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
+        <div className="bg-white p-8 rounded-2xl shadow-2xl w-full max-w-md animate-in fade-in zoom-in duration-300">
+          <div className="flex justify-center mb-6">
+            <div className="bg-purple-600 p-4 rounded-full text-white shadow-lg shadow-purple-500/30">
+              <Lock size={32} />
+            </div>
+          </div>
+          <h2 className="text-2xl font-bold text-center mb-2 text-slate-800">InstaMonitor Pro</h2>
+          <p className="text-center text-slate-500 mb-6 text-sm">Bitte authentifizieren</p>
+          
+          <form onSubmit={handleLogin} className="space-y-4">
+            <div>
+                <input 
+                  type="password" 
+                  className={`w-full px-4 py-3 border rounded-lg focus:ring-2 outline-none transition-all ${loginError ? 'border-red-500 focus:ring-red-200' : 'border-slate-300 focus:ring-purple-200 focus:border-purple-500'}`}
+                  placeholder="Passwort eingeben..."
+                  value={password}
+                  onChange={e => {setPassword(e.target.value); setLoginError(false);}}
+                  autoFocus
+                />
+                {loginError && <p className="text-red-500 text-xs mt-1 ml-1 flex items-center gap-1"><AlertCircle size={10}/> Falsches Passwort</p>}
+            </div>
+            <button className="w-full bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white font-bold py-3 rounded-lg transition-all shadow-md transform hover:scale-[1.02] active:scale-[0.98]">
+              Zugriff anfordern
+            </button>
+          </form>
+          <div className="mt-6 text-center text-slate-300 text-xs">
+              Protected System • v2.0
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   // --- RENDER ---
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800 font-sans" style={{ cursor: resizingRef.current ? 'col-resize' : 'auto' }}>
@@ -367,7 +445,8 @@ export default function App() {
              <input type="text" placeholder="Ziel..." className="bg-transparent px-3 py-1 outline-none text-sm w-full md:w-32" value={newTarget} onChange={e => setNewTarget(e.target.value)} />
              <button onClick={handleAddTarget} className="bg-black text-white p-1.5 rounded-md hover:bg-slate-800"><Plus size={16} /></button>
            </div>
-           <button onClick={loadData} className="p-2 hover:bg-slate-100 rounded-full"><RefreshCw size={18} /></button>
+           <button onClick={loadData} className="p-2 hover:bg-slate-100 rounded-full" title="Reload"><RefreshCw size={18} /></button>
+           <button onClick={handleLogout} className="p-2 hover:bg-red-50 text-slate-400 hover:text-red-500 rounded-full" title="Logout"><LogOut size={18} /></button>
         </div>
       </nav>
 
