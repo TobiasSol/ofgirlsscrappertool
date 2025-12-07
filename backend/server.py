@@ -67,6 +67,9 @@ def init_db():
     conn.commit()
     conn.close()
 
+# Datenbank beim Import initialisieren (auch für Gunicorn)
+init_db()
+
 # --- HIKERAPI & LOGIK ---
 def extract_email(text):
     if not text: return ""
