@@ -5,7 +5,7 @@ import re
 import threading
 import os
 from datetime import datetime
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 from hikerapi import Client
 
@@ -24,7 +24,8 @@ DB_FILE = os.path.join(DATA_PATH, "instagram_leads.db")
 if DATA_PATH != "." and not os.path.exists(DATA_PATH):
     os.makedirs(DATA_PATH, exist_ok=True)
 
-app = Flask(__name__)
+# Flask App mit statischen Dateien für Production
+app = Flask(__name__, static_folder='../dist', static_url_path='')
 CORS(app)
 
 # Globaler Status-Speicher für laufende Jobs
@@ -407,6 +408,24 @@ def update_status():
     conn.commit()
     conn.close()
     return jsonify({"success": True})
+
+# Catch-All Route für React Router (muss nach allen API-Routen kommen)
+@app.route('/', defaults={'path': ''})
+@app.route('/<path:path>')
+def serve_frontend(path):
+    # Wenn es eine API-Route ist, 404 zurückgeben
+    if path.startswith('api/'):
+        return jsonify({"error": "Not found"}), 404
+    
+    # Statische Dateien (JS, CSS, etc.) servieren
+    if path and path != 'index.html':
+        try:
+            return send_from_directory(app.static_folder, path)
+        except:
+            pass
+    
+    # Alle anderen Routen -> index.html (für React Router)
+    return send_from_directory(app.static_folder, 'index.html')
 
 if __name__ == '__main__':
     init_db()
