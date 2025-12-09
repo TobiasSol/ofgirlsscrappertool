@@ -417,6 +417,76 @@ def mark_exported():
     save_data(data)
     return jsonify({"success": True})
 
+@app.route('/api/import', methods=['POST'])
+def import_data():
+    if 'file' not in request.files:
+        return jsonify({"error": "No file part"}), 400
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({"error": "No selected file"}), 400
+    
+    try:
+        imported_data = json.load(file)
+        current_data = load_data()
+        
+        # Merge Logic
+        # Wir nehmen an, dass imported_data entweder eine Liste von Leads ist 
+        # oder ein Objekt mit "leads" und "targets".
+        
+        new_leads = []
+        if isinstance(imported_data, list):
+            new_leads = imported_data
+        elif isinstance(imported_data, dict) and "leads" in imported_data:
+            new_leads = imported_data["leads"]
+            
+            # Merge Targets wenn vorhanden
+            if "targets" in imported_data:
+                existing_targets = {t['username'] for t in current_data['targets']}
+                for t in imported_data['targets']:
+                    if t['username'] not in existing_targets:
+                        current_data['targets'].append(t)
+        
+        # Merge Leads
+        # Strategie: Existierende Leads werden aktualisiert (wenn PK matcht), neue hinzugefügt.
+        # PK ist unique Identifier.
+        
+        leads_map = {str(l['pk']): l for l in current_data['leads']}
+        added_count = 0
+        updated_count = 0
+        
+        for lead in new_leads:
+            pk = str(lead.get('pk'))
+            if not pk: continue
+            
+            # Normalisierung Import-Daten
+            if "followersCount" not in lead: lead["followersCount"] = lead.get("followers_count", 0)
+            if "foundDate" not in lead: lead["foundDate"] = lead.get("found_date", datetime.now().isoformat())
+            # ... weitere Felder bei Bedarf mappen
+            
+            if pk in leads_map:
+                # Update existierenden Lead (optional: nur wenn Import neuer ist? Hier: Überschreiben)
+                # Wir behalten den Status bei, es sei denn der Import hat was Spezifisches?
+                # Einfachheitshalber: Wir mergen Felder.
+                existing = leads_map[pk]
+                existing.update(lead) # Import gewinnt
+                updated_count += 1
+            else:
+                current_data['leads'].append(lead)
+                leads_map[pk] = lead
+                added_count += 1
+                
+        save_data(current_data)
+        return jsonify({"success": True, "added": added_count, "updated": updated_count})
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/export', methods=['GET'])
+def export_data():
+    if not os.path.exists(DATA_FILE):
+        return jsonify({"error": "No data found"}), 404
+    return send_from_directory(os.path.dirname(DATA_FILE), os.path.basename(DATA_FILE), as_attachment=True)
+
 @app.route('/api/delete-users', methods=['POST'])
 def delete_users():
     pks = request.json.get('pks', []) # Erwartet Array von IDs (PKs als Integer oder Strings)

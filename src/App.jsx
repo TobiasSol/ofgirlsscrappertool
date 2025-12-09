@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   Search, RefreshCw, Trash2, Mail, Instagram, 
-  CheckCircle, AlertCircle, Plus, Lock, EyeOff, Activity, ArrowUpDown, XCircle, Loader2, Ban, Heart, Copy, Check, GripVertical, Play, ExternalLink, Globe, UserPlus, Menu, LogOut
+  CheckCircle, AlertCircle, Plus, Lock, EyeOff, Activity, ArrowUpDown, XCircle, Loader2, Ban, Heart, Copy, Check, GripVertical, Play, ExternalLink, Globe, UserPlus, Menu, LogOut, Download, Upload
 } from 'lucide-react';
 
 const API_URL = "/api"; 
@@ -86,6 +86,7 @@ export default function App() {
   // Progress State
   const [activeJob, setActiveJob] = useState(null);
   const [copySuccess, setCopySuccess] = useState(false);
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   // --- COLUMN RESIZING ---
   const defaultWidths = {
@@ -280,6 +281,38 @@ export default function App() {
     loadData(); 
   };
 
+  const handleDownloadBackup = () => {
+      window.location.href = `${API_URL}/export`;
+  };
+
+  const handleImportBackup = async (event) => {
+      const file = event.target.files[0];
+      if (!file) return;
+      
+      const formData = new FormData();
+      formData.append('file', file);
+      
+      setLoading(true);
+      try {
+          const res = await fetch(`${API_URL}/import`, {
+              method: 'POST',
+              body: formData
+          });
+          const data = await res.json();
+          if (data.success) {
+              alert(`Import erfolgreich: ${data.added} neu, ${data.updated} aktualisiert.`);
+              loadData();
+          } else {
+              alert(`Fehler: ${data.error}`);
+          }
+      } catch (e) {
+          alert("Upload fehlgeschlagen.");
+      } finally {
+          setLoading(false);
+          event.target.value = null; // Reset input
+      }
+  };
+
   const handleManualAdd = async (username) => {
     if (!username) return;
     setLoading(true); 
@@ -439,14 +472,17 @@ export default function App() {
       {!appReady && <Preloader />}
 
       {/* HEADER */}
-      <nav className="bg-white border-b border-slate-200 sticky top-0 z-30 px-4 md:px-6 py-4 flex flex-col md:flex-row items-center justify-between shadow-sm gap-4">
+      <nav className="bg-white border-b border-slate-200 sticky top-0 z-30 px-4 md:px-6 py-4 flex items-center justify-between shadow-sm gap-4">
         <div className="flex items-center gap-2">
-          <Instagram className="text-purple-600" size={28} />
-          <h1 className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-purple-600 to-pink-600">InstaMonitor</h1>
+          <button className="md:hidden p-2 -ml-2 text-slate-600" onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}>
+              <Menu size={24}/>
+          </button>
+          <Instagram className="text-purple-600 hidden md:block" size={28} />
+          <h1 className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-purple-600 to-pink-600 truncate">InstaMonitor</h1>
         </div>
         
-        {/* TAB BAR (Responsive Scroll) */}
-        <div className="flex gap-2 bg-slate-50 p-1.5 rounded-xl border border-slate-200 overflow-x-auto w-full md:w-auto no-scrollbar">
+        {/* DESKTOP TAB BAR */}
+        <div className="hidden md:flex gap-2 bg-slate-50 p-1.5 rounded-xl border border-slate-200">
             <TabButton active={activeTab === 'review'} onClick={() => setActiveTab('review')} label="Review" color="pink" icon={<Play size={16}/>} />
             <div className="w-[1px] bg-slate-300 mx-1 flex-shrink-0"></div>
             <TabButton active={activeTab === 'unfiltered'} onClick={() => setActiveTab('unfiltered')} label="Ungefiltert" count={stats.unfiltered} color="purple"/>
@@ -458,21 +494,76 @@ export default function App() {
             <TabButton active={activeTab === 'add'} onClick={() => setActiveTab('add')} label="+" color="indigo" />
         </div>
 
-        <div className="flex items-center gap-2 w-full md:w-auto">
-           <div className="flex bg-slate-100 rounded-lg p-1 flex-1 md:flex-none">
-             <input type="text" placeholder="Ziel..." className="bg-transparent px-3 py-1 outline-none text-sm w-full md:w-32" value={newTarget} onChange={e => setNewTarget(e.target.value)} />
+        <div className="flex items-center gap-2">
+           <div className="hidden md:flex bg-slate-100 rounded-lg p-1">
+             <input type="text" placeholder="Ziel..." className="bg-transparent px-3 py-1 outline-none text-sm w-32" value={newTarget} onChange={e => setNewTarget(e.target.value)} />
              <button onClick={handleAddTarget} className="bg-black text-white p-1.5 rounded-md hover:bg-slate-800"><Plus size={16} /></button>
            </div>
            <button onClick={loadData} className="p-2 hover:bg-slate-100 rounded-full relative z-50" title="Reload"><RefreshCw size={18} /></button>
            <button 
                 onClick={handleLogout} 
-                className="bg-red-50 hover:bg-red-100 text-red-600 p-2 rounded-full cursor-pointer relative z-50 transition-colors" 
+                className="bg-red-50 hover:bg-red-100 text-red-600 p-2 rounded-full cursor-pointer relative z-50 transition-colors hidden md:block" 
                 title="Ausloggen"
            >
                <LogOut size={18}/>
            </button>
         </div>
       </nav>
+
+      {/* MOBILE DRAWER */}
+      {isMobileMenuOpen && (
+          <div className="fixed inset-0 z-50 md:hidden">
+              <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setIsMobileMenuOpen(false)}></div>
+              <div className="absolute left-0 top-0 bottom-0 w-3/4 max-w-xs bg-white shadow-2xl p-6 flex flex-col animate-in slide-in-from-left duration-200">
+                  <div className="flex items-center gap-2 mb-8">
+                      <Instagram className="text-purple-600" size={28} />
+                      <h1 className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-purple-600 to-pink-600">InstaMonitor</h1>
+                  </div>
+                  
+                  <div className="space-y-2 flex-1 overflow-y-auto">
+                      <button onClick={() => {setActiveTab('review'); setIsMobileMenuOpen(false)}} className={`w-full text-left px-4 py-3 rounded-xl font-bold flex items-center gap-3 ${activeTab === 'review' ? 'bg-pink-50 text-pink-600' : 'text-slate-600 hover:bg-slate-50'}`}>
+                          <Play size={20}/> Review Mode
+                      </button>
+                      <div className="h-[1px] bg-slate-100 my-2"></div>
+                      
+                      <button onClick={() => {setActiveTab('unfiltered'); setIsMobileMenuOpen(false)}} className={`w-full text-left px-4 py-3 rounded-xl font-bold flex items-center justify-between ${activeTab === 'unfiltered' ? 'bg-purple-50 text-purple-600' : 'text-slate-600 hover:bg-slate-50'}`}>
+                          <span>Ungefiltert</span> <span className="bg-slate-100 px-2 py-0.5 rounded-full text-xs text-slate-500">{stats.unfiltered}</span>
+                      </button>
+                      <button onClick={() => {setActiveTab('favorites'); setIsMobileMenuOpen(false)}} className={`w-full text-left px-4 py-3 rounded-xl font-bold flex items-center justify-between ${activeTab === 'favorites' ? 'bg-yellow-50 text-yellow-600' : 'text-slate-600 hover:bg-slate-50'}`}>
+                          <span>Favoriten</span> <span className="bg-slate-100 px-2 py-0.5 rounded-full text-xs text-slate-500">{stats.favorites}</span>
+                      </button>
+                      <button onClick={() => {setActiveTab('email'); setIsMobileMenuOpen(false)}} className={`w-full text-left px-4 py-3 rounded-xl font-bold flex items-center justify-between ${activeTab === 'email' ? 'bg-blue-50 text-blue-600' : 'text-slate-600 hover:bg-slate-50'}`}>
+                          <span>Email</span> <span className="bg-slate-100 px-2 py-0.5 rounded-full text-xs text-slate-500">{stats.email}</span>
+                      </button>
+                      <button onClick={() => {setActiveTab('hidden'); setIsMobileMenuOpen(false)}} className={`w-full text-left px-4 py-3 rounded-xl font-bold flex items-center justify-between ${activeTab === 'hidden' ? 'bg-slate-100 text-slate-700' : 'text-slate-600 hover:bg-slate-50'}`}>
+                          <span>Versteckt</span> <span className="bg-slate-100 px-2 py-0.5 rounded-full text-xs text-slate-500">{stats.hidden}</span>
+                      </button>
+                      <button onClick={() => {setActiveTab('blocked'); setIsMobileMenuOpen(false)}} className={`w-full text-left px-4 py-3 rounded-xl font-bold flex items-center justify-between ${activeTab === 'blocked' ? 'bg-red-50 text-red-600' : 'text-slate-600 hover:bg-slate-50'}`}>
+                          <span>Blockiert</span> <span className="bg-slate-100 px-2 py-0.5 rounded-full text-xs text-slate-500">{stats.blocked}</span>
+                      </button>
+                      
+                      <div className="h-[1px] bg-slate-100 my-2"></div>
+                      
+                      <button onClick={() => {setActiveTab('export'); setIsMobileMenuOpen(false)}} className={`w-full text-left px-4 py-3 rounded-xl font-bold flex items-center gap-3 ${activeTab === 'export' ? 'bg-green-50 text-green-600' : 'text-slate-600 hover:bg-slate-50'}`}>
+                          <Copy size={20}/> Export / Import
+                      </button>
+                      <button onClick={() => {setActiveTab('add'); setIsMobileMenuOpen(false)}} className={`w-full text-left px-4 py-3 rounded-xl font-bold flex items-center gap-3 ${activeTab === 'add' ? 'bg-indigo-50 text-indigo-600' : 'text-slate-600 hover:bg-slate-50'}`}>
+                          <UserPlus size={20}/> User hinzufügen
+                      </button>
+                  </div>
+
+                  <div className="pt-6 border-t border-slate-100 mt-2 space-y-4">
+                      <div className="flex bg-slate-100 rounded-lg p-1">
+                         <input type="text" placeholder="Ziel..." className="bg-transparent px-3 py-2 outline-none text-sm w-full" value={newTarget} onChange={e => setNewTarget(e.target.value)} />
+                         <button onClick={() => {handleAddTarget(); setIsMobileMenuOpen(false)}} className="bg-black text-white p-2 rounded-md hover:bg-slate-800"><Plus size={16} /></button>
+                       </div>
+                      <button onClick={handleLogout} className="w-full text-left px-4 py-3 rounded-xl font-bold flex items-center gap-3 text-red-600 hover:bg-red-50">
+                          <LogOut size={20}/> Ausloggen
+                      </button>
+                  </div>
+              </div>
+          </div>
+      )}
 
       <main className="w-full px-4 md:px-8 py-6 space-y-6">
         
@@ -610,19 +701,48 @@ export default function App() {
             </div>
         ) : activeTab === 'export' ? (
             <div className="bg-white p-6 md:p-8 rounded-xl shadow-sm border border-slate-200">
-                <h2 className="text-xl font-bold mb-4 flex items-center gap-2"><Copy size={24}/> Export</h2>
-                <textarea readOnly className="w-full h-64 p-4 bg-slate-50 border border-slate-200 rounded-lg font-mono text-sm focus:outline-none" value={processedUsers.map(u => u.username).join('\n')} />
-                <div className="mt-4 flex gap-3 flex-wrap">
-                    <button onClick={() => {
-                            navigator.clipboard.writeText(processedUsers.map(u => u.username).join('\n'));
-                            setCopySuccess(true); setTimeout(() => setCopySuccess(false), 2000);
-                            handleMarkExported(processedUsers.map(u => u.username));
-                        }} className="bg-green-600 hover:bg-green-700 text-white px-6 py-2 rounded-lg font-bold flex items-center gap-2" disabled={processedUsers.length === 0}>
-                        {copySuccess ? <Check size={20}/> : <Copy size={20}/>} Kopieren
-                    </button>
-                    <button onClick={() => setSelectedUsers([])} className="bg-slate-200 hover:bg-slate-300 text-slate-700 px-6 py-2 rounded-lg font-bold flex items-center gap-2" disabled={selectedUsers.length === 0}>
-                        <Trash2 size={20}/> Leeren
-                    </button>
+                <h2 className="text-xl font-bold mb-6 flex items-center gap-2 text-slate-800"><Copy size={24}/> Datenverwaltung</h2>
+                
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                    {/* LIST EXPORT */}
+                    <div>
+                        <h3 className="font-bold text-slate-600 mb-2 flex items-center gap-2"><Copy size={18}/> Liste kopieren</h3>
+                        <p className="text-sm text-slate-400 mb-3">Kopiert die Benutzernamen der aktuell gefilterten/markierten Liste.</p>
+                        <textarea readOnly className="w-full h-40 p-4 bg-slate-50 border border-slate-200 rounded-lg font-mono text-sm focus:outline-none mb-3" value={processedUsers.map(u => u.username).join('\n')} />
+                        <div className="flex gap-2">
+                            <button onClick={() => {
+                                    navigator.clipboard.writeText(processedUsers.map(u => u.username).join('\n'));
+                                    setCopySuccess(true); setTimeout(() => setCopySuccess(false), 2000);
+                                    handleMarkExported(processedUsers.map(u => u.username));
+                                }} className="bg-slate-800 hover:bg-slate-900 text-white px-4 py-2 rounded-lg font-bold flex items-center gap-2 text-sm" disabled={processedUsers.length === 0}>
+                                {copySuccess ? <Check size={16}/> : <Copy size={16}/>} Kopieren
+                            </button>
+                            <button onClick={() => setSelectedUsers([])} className="bg-slate-200 hover:bg-slate-300 text-slate-700 px-4 py-2 rounded-lg font-bold flex items-center gap-2 text-sm" disabled={selectedUsers.length === 0}>
+                                <Trash2 size={16}/> Leeren
+                            </button>
+                        </div>
+                    </div>
+
+                    {/* BACKUP */}
+                    <div className="space-y-6">
+                        <div>
+                            <h3 className="font-bold text-slate-600 mb-2 flex items-center gap-2"><Download size={18}/> Backup erstellen</h3>
+                            <p className="text-sm text-slate-400 mb-3">Lade die komplette Datenbank als JSON herunter, um sie zu sichern.</p>
+                            <button onClick={handleDownloadBackup} className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg font-bold flex items-center gap-2 w-full justify-center">
+                                <Download size={20}/> Datenbank herunterladen
+                            </button>
+                        </div>
+
+                        <div className="pt-6 border-t border-slate-100">
+                            <h3 className="font-bold text-slate-600 mb-2 flex items-center gap-2"><Upload size={18}/> Backup wiederherstellen</h3>
+                            <p className="text-sm text-slate-400 mb-3">Lade eine zuvor gesicherte JSON-Datei hoch. Vorhandene Daten werden aktualisiert.</p>
+                            <label className="bg-white border-2 border-dashed border-slate-300 hover:border-blue-500 hover:bg-blue-50 text-slate-500 hover:text-blue-600 px-6 py-8 rounded-lg font-bold flex flex-col items-center gap-2 w-full justify-center cursor-pointer transition-colors">
+                                <Upload size={32}/>
+                                <span>Datei auswählen...</span>
+                                <input type="file" accept=".json" onChange={handleImportBackup} className="hidden" />
+                            </label>
+                        </div>
+                    </div>
                 </div>
             </div>
         ) : (
@@ -633,23 +753,59 @@ export default function App() {
                 <div className="md:hidden space-y-4 p-4">
                     {processedUsers.map((user) => {
                         const isSelected = selectedUsers.includes(user.pk);
+                        const isFavorite = user.status === 'favorite';
                         return (
-                            <div key={user.pk} className={`border rounded-lg p-4 shadow-sm ${isSelected ? 'bg-purple-50 border-purple-200' : 'bg-white'}`}>
-                                <div className="flex justify-between items-start mb-2">
-                                    <div className="flex items-center gap-3">
-                                        <input type="checkbox" checked={isSelected} onChange={() => toggleSelectUser(user.pk)} className="w-5 h-5 rounded accent-purple-600"/>
-                                        <div className="font-bold text-lg">{user.username}</div>
+                            <div key={user.pk} className={`border rounded-xl p-4 shadow-sm transition-all ${isSelected ? 'bg-purple-50 border-purple-200 ring-1 ring-purple-200' : 'bg-white border-slate-100'} ${isFavorite ? 'bg-yellow-50/50' : ''}`}>
+                                
+                                {/* Header: Checkbox, Name, Badges */}
+                                <div className="flex justify-between items-start mb-3">
+                                    <div className="flex items-center gap-3 min-w-0 pr-2">
+                                        <input type="checkbox" checked={isSelected} onChange={() => toggleSelectUser(user.pk)} className="w-5 h-5 rounded accent-purple-600 flex-shrink-0"/>
+                                        <div className="min-w-0">
+                                            <div className="flex items-center gap-2">
+                                                <div className="font-bold text-lg truncate text-slate-800">{user.username}</div>
+                                                {user.status === 'new' && <span className="bg-purple-600 text-white text-[10px] px-1.5 py-0.5 rounded font-bold flex-shrink-0">NEU</span>}
+                                            </div>
+                                            <div className="text-xs text-slate-400 truncate">{user.fullName}</div>
+                                        </div>
                                     </div>
-                                    <div className="flex gap-1">
-                                        <button onClick={() => handleStatusChange(user.pk, user.status === 'favorite' ? 'active' : 'favorite')} className="p-2 bg-white border rounded text-yellow-500"><Heart size={16} className={user.status === 'favorite' ? 'fill-yellow-500' : ''}/></button>
-                                        <button onClick={() => handleStatusChange(user.pk, 'blocked')} className="p-2 bg-white border rounded text-red-500"><Ban size={16}/></button>
+                                    
+                                    {/* Action Buttons (Compact) */}
+                                    <div className="flex gap-1 flex-shrink-0">
+                                        <button onClick={() => handleStatusChange(user.pk, user.status === 'favorite' ? 'active' : 'favorite')} className={`p-2 rounded-lg border ${isFavorite ? 'bg-yellow-400 border-yellow-500 text-white' : 'bg-white border-slate-200 text-slate-300'}`}><Heart size={16} className={isFavorite ? 'fill-white' : ''}/></button>
+                                        <button onClick={() => handleStatusChange(user.pk, 'blocked')} className="p-2 bg-white border border-slate-200 rounded-lg text-slate-300 hover:text-red-500 hover:bg-red-50"><Ban size={16}/></button>
+                                        <button onClick={() => handleStatusChange(user.pk, user.status === 'hidden' ? 'active' : 'hidden')} className="p-2 bg-white border border-slate-200 rounded-lg text-slate-300 hover:text-slate-600 hover:bg-slate-50">{user.status === 'hidden' ? <EyeOff size={16} className="text-slate-600"/> : <EyeOff size={16}/>}</button>
                                     </div>
                                 </div>
-                                <div className="text-sm text-slate-600 mb-2 whitespace-pre-wrap line-clamp-3">{user.bio}</div>
-                                {user.externalUrl && <a href={user.externalUrl} target="_blank" className="text-blue-600 text-xs block mb-1 truncate"><Globe size={12} className="inline"/> Link</a>}
-                                    <div className="flex justify-between items-center text-xs text-slate-400 mt-3 border-t pt-2">
-                                    <span>{user.followersCount?.toLocaleString()} Follower</span>
-                                    <span>{formatDate(user.foundDate)}</span>
+
+                                {/* Status / Update Info */}
+                                {user.status === 'changed' && <div className="mb-2 text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded inline-block font-medium">Update: {user.changeDetails}</div>}
+
+                                {/* Bio & Links */}
+                                <div className="text-sm text-slate-600 mb-3 whitespace-pre-wrap line-clamp-3 leading-relaxed">{user.bio || <span className="italic text-slate-300">Keine Bio</span>}</div>
+                                
+                                <div className="space-y-1 mb-3">
+                                    {user.externalUrl && (
+                                        <a href={user.externalUrl} target="_blank" rel="noreferrer" className="flex items-center gap-2 text-blue-600 text-xs font-bold bg-blue-50 px-2 py-1.5 rounded hover:bg-blue-100 w-full truncate">
+                                            <Globe size={14} className="flex-shrink-0"/> <span className="truncate">{user.externalUrl.replace(/^https?:\/\//, '')}</span>
+                                        </a>
+                                    )}
+                                    {user.email && (
+                                        <div className="flex items-center gap-2 text-purple-700 text-xs font-bold bg-purple-50 px-2 py-1.5 rounded w-full truncate">
+                                            <Mail size={14} className="flex-shrink-0"/> <span className="truncate">{user.email}</span>
+                                        </div>
+                                    )}
+                                </div>
+
+                                {/* Footer: Metrics & Meta */}
+                                <div className="flex justify-between items-center text-xs text-slate-400 border-t border-slate-100 pt-3 mt-1">
+                                    <div className="flex items-center gap-3">
+                                        <span className="font-bold text-blue-600 bg-blue-50 px-2 py-0.5 rounded">{user.followersCount?.toLocaleString()} Follower</span>
+                                    </div>
+                                    <div className="text-right">
+                                        <div>{formatDate(user.foundDate)}</div>
+                                        <div className="text-[10px] text-slate-300 mt-0.5">Src: {user.sourceAccount}</div>
+                                    </div>
                                 </div>
                             </div>
                         )
