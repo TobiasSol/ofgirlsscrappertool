@@ -42,3 +42,11 @@ deploymentTarget = "vm"
 # Build Frontend, dann starte Backend auf Port 8000 (der alles serviert)
 run = ["gunicorn", "--bind", "0.0.0.0:8000", "--workers", "2", "--timeout", "120", "backend.server:app"]
 build = ["npm", "run", "build"]
+
+[[deployment.healthChecks]]
+path = "/health"
+initialDelaySeconds = 10
+periodSeconds = 10
+timeoutSeconds = 5
+successThreshold = 1
+failureThreshold = 30

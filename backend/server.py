@@ -534,6 +534,10 @@ def update_status():
     return jsonify({"error": "Not found"}), 404
 
 # Catch-All Route für React Router (muss nach allen API-Routen kommen)
+@app.route('/health')
+def health_check():
+    return jsonify({"status": "healthy"}), 200
+
 @app.route('/', defaults={'path': ''})
 @app.route('/<path:path>')
 def serve_frontend(path):
@@ -549,7 +553,10 @@ def serve_frontend(path):
             pass
     
     # Alle anderen Routen -> index.html (für React Router)
-    return send_from_directory(app.static_folder, 'index.html')
+    try:
+        return send_from_directory(app.static_folder, 'index.html')
+    except Exception as e:
+        return f"Frontend not built yet. Error: {e}", 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8000)
