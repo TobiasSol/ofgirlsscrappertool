@@ -1,4 +1,4 @@
-import sqlite3
+import json
 import time
 import random
 import re
@@ -10,65 +10,70 @@ from flask_cors import CORS
 from hikerapi import Client
 
 # --- KONFIGURATION ---
-# Flexibel für Replit, Render und Lokal
 API_KEY = os.environ.get("HIKERAPI_TOKEN", "y0a9buus1f3z0vx3gqodr8lh11vvsxyh")
 APP_PASSWORD = os.environ.get("APP_PASSWORD", "Tobideno85!")
 
-# Datenbank Pfad Logik
-# Auf Render setzen wir DATA_PATH per Env Var auf '/data' (für Persistent Disk)
-# Auf Replit/Lokal ist DATA_PATH leer, also nutzen wir '.' (aktueller Ordner)
-DATA_PATH = os.environ.get("DATA_PATH", ".")
-DB_FILE = os.path.join(DATA_PATH, "instagram_leads.db")
+# JSON Pfad Logik
+# Wir nutzen os.path.dirname(__file__), um vom backend/-Ordner aus
+# relativ zum Frontend-Datenordner zu navigieren.
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# Gehe eins hoch (ins Root) und dann nach src/data/users.json
+DATA_FILE = os.path.join(BASE_DIR, "..", "src", "data", "users.json")
 
 # Sicherstellen, dass der Ordner existiert
-if DATA_PATH != "." and not os.path.exists(DATA_PATH):
-    os.makedirs(DATA_PATH, exist_ok=True)
+os.makedirs(os.path.dirname(DATA_FILE), exist_ok=True)
 
-# Flask App mit statischen Dateien für Production
+# Flask App
 app = Flask(__name__, static_folder='../dist', static_url_path='')
 CORS(app)
 
-# After-Request Handler: Setze Permissions-Policy für alle Responses
 @app.after_request
 def set_permissions_policy(response):
-    # Blockiere lokale Netzwerk-Zugriffe
     response.headers['Permissions-Policy'] = 'local-network=()'
     return response
 
-# Globaler Status-Speicher für laufende Jobs
-# Format: {'username': {'status': 'running', 'found': 0, 'total_followers': 0, 'message': '...'}}
 JOBS = {}
 
-# --- DATENBANK HELPER ---
-def get_db():
-    conn = sqlite3.connect(DB_FILE)
-    conn.row_factory = sqlite3.Row
-    return conn
+# --- JSON HELPER ---
+def load_data():
+    """Lädt die komplette Datenstruktur aus der JSON-Datei."""
+    if not os.path.exists(DATA_FILE):
+        return {"leads": [], "targets": []}
+    try:
+        with open(DATA_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            
+            # MIGRATION: Falls das File nur eine Liste ist (altes Format)
+            if isinstance(data, list):
+                data = {"leads": data, "targets": []}
+            
+            # Sicherstellen, dass die Struktur stimmt
+            if "leads" not in data: data["leads"] = []
+            if "targets" not in data: data["targets"] = []
+            
+            # Daten-Normalisierung für bestehende Einträge
+            for lead in data["leads"]:
+                if "followersCount" not in lead: lead["followersCount"] = 0
+                if "foundDate" not in lead: lead["foundDate"] = datetime.now().isoformat()
+                if "lastScrapedDate" not in lead: lead["lastScrapedDate"] = lead["foundDate"]
+                if "changeDetails" not in lead: lead["changeDetails"] = ""
+                
+            return data
+    except Exception as e:
+        print(f"Fehler beim Laden der JSON: {e}")
+        return {"leads": [], "targets": []}
 
-def init_db():
-    conn = get_db()
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS targets 
-                 (username TEXT PRIMARY KEY, last_scraped TEXT)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS leads 
-                 (pk INTEGER PRIMARY KEY, 
-                  username TEXT, 
-                  full_name TEXT, 
-                  bio TEXT, 
-                  email TEXT, 
-                  is_private INTEGER, 
-                  followers_count INTEGER,
-                  source_account TEXT, 
-                  found_date TEXT, 
-                  last_scraped_date TEXT,
-                  status TEXT,
-                  change_details TEXT,
-                  last_exported TEXT)''') 
-    conn.commit()
-    conn.close()
+def save_data(data):
+    """Speichert die komplette Datenstruktur in die JSON-Datei."""
+    try:
+        with open(DATA_FILE, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"Fehler beim Speichern der JSON: {e}")
 
-# Datenbank beim Import initialisieren (auch für Gunicorn)
-init_db()
+# Initialisiere Datei wenn leer
+if not os.path.exists(DATA_FILE):
+    save_data({"leads": [], "targets": []})
 
 # --- HIKERAPI & LOGIK ---
 def extract_email(text):
@@ -79,7 +84,7 @@ def extract_email(text):
 def scrape_target_logic(target_username, mode="scan"):
     """
     mode='scan': Nur neue finden
-    mode='sync': Auch existierende auf Änderungen prüfen (für TARGETS)
+    mode='sync': Auch existierende auf Änderungen prüfen
     """
     global JOBS
     print(f"DEBUG: Starte Scraping fuer: {target_username} (Modus: {mode})")
@@ -92,20 +97,23 @@ def scrape_target_logic(target_username, mode="scan"):
     }
 
     cl = Client(token=API_KEY)
-    conn = get_db()
-    c = conn.cursor()
+    
+    # Daten einmal laden (Achtung: Bei viel Concurrency könnte das zu Race Conditions führen,
+    # für diesen Use Case aber meist ok. Besser wäre Locking.)
+    data = load_data()
+    leads_map = {lead['pk']: lead for lead in data['leads']}
     
     # 1. Target ID holen
     try:
-        print(f"DEBUG: Rufe HikerAPI für {target_username}...") # DEBUG
+        print(f"DEBUG: Rufe HikerAPI für {target_username}...") 
         target_info = cl.user_by_username_v1(target_username)
         
         if not target_info:
-             raise Exception("Keine Daten von API erhalten (User nicht gefunden oder API Fehler)")
+             raise Exception("Keine Daten von API erhalten")
 
         target_id = target_info.get('pk')
         if not target_id:
-             raise Exception(f"Keine PK gefunden in Antwort: {target_info}")
+             raise Exception(f"Keine PK gefunden")
 
         follower_count_total = target_info.get('follower_count', 0)
         JOBS[target_username].update({'status': 'running', 'total_followers': follower_count_total, 'message': 'Lade Follower...'})
@@ -114,7 +122,7 @@ def scrape_target_logic(target_username, mode="scan"):
         JOBS[target_username] = {'status': 'error', 'message': f'Fehler: {str(e)}'}
         return
 
-    # 2. Followings laden (GQL Chunk)
+    # 2. Followings laden
     end_cursor = None
     users_processed = 0
     
@@ -129,17 +137,14 @@ def scrape_target_logic(target_username, mode="scan"):
                 username = user.get('username')
                 full_name = user.get('full_name', '')
                 
-                # Check DB
-                c.execute("SELECT * FROM leads WHERE pk=?", (pk,))
-                existing = c.fetchone()
+                existing = leads_map.get(pk)
 
                 # Wenn Blockiert -> IGNORIEREN
-                if existing and existing['status'] == 'blocked':
+                if existing and existing.get('status') == 'blocked':
                     continue
                 
                 # --- MODUS: SCAN (Neue finden) ---
                 if not existing:
-                    # Details holen
                     try:
                         details = cl.user_by_username_v1(username)
                         bio = details.get('biography', '')
@@ -147,23 +152,48 @@ def scrape_target_logic(target_username, mode="scan"):
                         followers = details.get('follower_count', 0)
                         is_private = 1 if details.get('is_private') else 0
                         
-                        c.execute('''INSERT INTO leads 
-                                     (pk, username, full_name, bio, email, is_private, followers_count, source_account, found_date, last_scraped_date, status, change_details)
-                                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                                     (pk, username, full_name, bio, email, is_private, followers, target_username, datetime.now().isoformat(), datetime.now().isoformat(), 'new', ''))
-                        conn.commit()
+                        new_lead = {
+                            "pk": pk,
+                            "id": f"user_{pk}", # Für Frontend ID Konsistenz
+                            "username": username,
+                            "fullName": full_name,
+                            "bio": bio,
+                            "email": email,
+                            "isPrivate": bool(is_private),
+                            "followersCount": followers,
+                            "sourceAccount": target_username,
+                            "foundDate": datetime.now().isoformat(),
+                            "lastScrapedDate": datetime.now().isoformat(),
+                            "status": "new",
+                            "changeDetails": "",
+                            "avatar": f"https://api.dicebear.com/7.x/initials/svg?seed={username}"
+                        }
+                        
+                        data['leads'].append(new_lead)
+                        leads_map[pk] = new_lead # Cache updaten
+                        
+                        # Speichern nach jedem Fund (etwas I/O lastig, aber sicherer)
+                        save_data(data)
+                        
                         users_processed += 1
-                        # Update Job Status
                         JOBS[target_username]['found'] = users_processed
                         JOBS[target_username]['message'] = f'{users_processed} neue Leads gefunden'
                         
                     except Exception as e:
                         print(f"Fehler bei User Detail {username}: {e}")
 
-                # --- MODUS: SYNC (Updates prüfen - nur wenn autom. Sync läuft) ---
-                elif existing and mode == "sync" and existing['status'] != 'hidden':
-                    sync_single_lead(cl, c, existing)
-                    conn.commit()
+                # --- MODUS: SYNC ---
+                elif existing and mode == "sync" and existing.get('status') != 'hidden':
+                    # Sync Logik direkt hier integrieren oder Hilfsfunktion anpassen
+                    updated_lead = sync_single_lead_logic(cl, existing)
+                    if updated_lead:
+                         # Update in Liste finden und ersetzen
+                         for i, l in enumerate(data['leads']):
+                             if l['pk'] == pk:
+                                 data['leads'][i] = updated_lead
+                                 break
+                         save_data(data)
+                         
                     users_processed += 1
                     JOBS[target_username]['found'] = users_processed
                     JOBS[target_username]['message'] = f'{users_processed} geprüft'
@@ -176,83 +206,71 @@ def scrape_target_logic(target_username, mode="scan"):
             print(f"Scraping Fehler Chunk: {e}")
             break
             
-    # Update Target Timestamp & Job Finish
-    c.execute("INSERT OR REPLACE INTO targets (username, last_scraped) VALUES (?, ?)", 
-              (target_username, datetime.now().isoformat()))
-    conn.commit()
-    conn.close()
+    # Update Target Timestamp
+    # Check if target exists
+    target_found = False
+    for t in data['targets']:
+        if t['username'] == target_username:
+            t['lastScraped'] = datetime.now().isoformat()
+            target_found = True
+            break
+    
+    if not target_found:
+        data['targets'].append({
+            "username": target_username,
+            "lastScraped": datetime.now().isoformat()
+        })
+        
+    save_data(data)
     
     JOBS[target_username]['status'] = 'finished'
     JOBS[target_username]['message'] = 'Fertig!'
     print(f"Fertig mit {target_username}")
 
-def sync_single_lead(client, cursor, existing_row):
-    """Prüft einen einzelnen Lead auf Updates"""
-    username = existing_row['username']
-    pk = existing_row['pk']
+def sync_single_lead_logic(client, lead):
+    """Prüft einen einzelnen Lead auf Updates und gibt das aktualisierte Objekt zurück (oder None)"""
+    username = lead['username']
     try:
-        # FIX: Wir nutzen ZWINGEND user_by_username_v1, da user_by_id_v1 oft veraltete Daten liefert.
-        # Das entspricht exakt der Logik beim "Neu Hinzufügen".
         details = client.user_by_username_v1(username)
-        
-        if not details:
-            print(f"Keine Details für {username} gefunden.")
-            return False
+        if not details: return None
 
         new_bio = details.get('biography', '')
         new_followers = details.get('follower_count', 0)
         new_email = details.get('public_email', '') or extract_email(new_bio)
         new_external_url = details.get('external_url', '')
 
-        # DEBUG PRINTS
-        print(f"--- Sync: {username} ---")
-        print(f"OLD Bio: {existing_row['bio']}")
-        print(f"NEW Bio: {new_bio}")
-        print(f"NEW Url: {new_external_url}")
-        
         changes = []
-        # Update erzwingen, auch wenn gleich
-        if new_bio != existing_row['bio']: 
-            changes.append("Bio neu")
+        if new_bio != lead.get('bio', ''): changes.append("Bio neu")
+        if new_external_url != lead.get('externalUrl', ''): changes.append("Link neu")
         
-        if new_external_url != existing_row['external_url']:
-            changes.append("Link neu")
-
-        old_followers = existing_row['followers_count'] or 0
+        old_followers = lead.get('followersCount', 0)
         if abs(new_followers - old_followers) > 10: 
             changes.append(f"Follower: {old_followers}->{new_followers}")
 
-        new_status = existing_row['status']
-        if existing_row['status'] == 'not_found': new_status = 'active'
+        new_status = lead['status']
+        if lead['status'] == 'not_found': new_status = 'active'
         if changes and new_status != 'blocked': new_status = 'changed'
 
-        change_str = ", ".join(changes) if changes else existing_row['change_details']
+        change_str = ", ".join(changes) if changes else lead.get('changeDetails', '')
 
-        cursor.execute('''UPDATE leads SET 
-                        bio=?, email=?, followers_count=?, last_scraped_date=?, status=?, change_details=?, external_url=?, full_name=?
-                        WHERE pk=?''',
-                        (new_bio, new_email, new_followers, datetime.now().isoformat(), new_status, change_str, new_external_url, details.get('full_name', ''), pk))
+        # Objekt aktualisieren
+        lead['bio'] = new_bio
+        lead['email'] = new_email
+        lead['followersCount'] = new_followers
+        lead['lastScrapedDate'] = datetime.now().isoformat()
+        lead['status'] = new_status
+        lead['changeDetails'] = change_str
+        lead['externalUrl'] = new_external_url
+        lead['fullName'] = details.get('full_name', '')
         
-        return True
+        # Falls sich was geändert hat, Update-Datum setzen
+        if changes:
+             lead['lastUpdatedDate'] = datetime.now().isoformat()
+        
+        return lead
     except Exception as e:
-        print(f"Fehler bei {username}: {e}")
-        return False
-
-def sync_specific_users_logic(usernames):
-    print(f"Starte Sync fuer {len(usernames)} User...")
-    cl = Client(token=API_KEY)
-    conn = get_db()
-    c = conn.cursor()
-    
-    for username in usernames:
-        c.execute("SELECT * FROM leads WHERE username=?", (username,))
-        row = c.fetchone()
-        if row:
-            sync_single_lead(cl, c, row)
-            conn.commit()
-    
-    conn.close()
-    print("Sync fertig.")
+        print(f"Fehler Sync {username}: {e}")
+        return None
 
 # --- API ENDPOINTS ---
 
@@ -265,29 +283,29 @@ def login():
 
 @app.route('/api/users', methods=['GET'])
 def get_users():
-    conn = get_db()
-    leads = conn.execute("SELECT * FROM leads ORDER BY found_date DESC").fetchall()
-    targets = conn.execute("SELECT * FROM targets").fetchall()
-    conn.close()
-    return jsonify({
-        "leads": [dict(row) for row in leads],
-        "targets": [dict(row) for row in targets]
-    })
+    data = load_data()
+    # Sortierung (optional, hier im Backend oder Frontend)
+    # data['leads'].sort(key=lambda x: x['foundDate'], reverse=True)
+    return jsonify(data)
 
 @app.route('/api/add-target', methods=['POST'])
 def add_target():
     username = request.json.get('username')
     if not username: return jsonify({"error": "Missing username"}), 400
     
+    # Target sofort in DB/JSON eintragen
+    data = load_data()
+    if not any(t['username'] == username for t in data['targets']):
+        data['targets'].append({"username": username, "lastScraped": None})
+        save_data(data)
+    
     threading.Thread(target=scrape_target_logic, args=(username, "scan")).start()
     return jsonify({"message": f"Startet...", "job_id": username})
 
 @app.route('/api/sync', methods=['POST'])
 def sync_all():
-    # Sync Targets (Standard)
-    conn = get_db()
-    targets = conn.execute("SELECT username FROM targets").fetchall()
-    conn.close()
+    data = load_data()
+    targets = data.get('targets', [])
     
     def run_sync():
         for t in targets:
@@ -301,84 +319,84 @@ def sync_users_endpoint():
     usernames = request.json.get('usernames', [])
     if not usernames: return jsonify({"error": "No usernames"}), 400
     
-    # Job ID erstellen (z.B. "sync_12345")
     job_id = f"sync_{int(time.time())}"
-    
-    # Job initialisieren
-    JOBS[job_id] = {
-        'status': 'running',
-        'found': 0,
-        'total': len(usernames),
-        'message': 'Starte Sync...'
-    }
+    JOBS[job_id] = {'status': 'running', 'found': 0, 'total': len(usernames), 'message': 'Starte Sync...'}
 
     def run_sync_job(job_id, users):
         processed = 0
         cl = Client(token=API_KEY)
-        conn = get_db()
-        c = conn.cursor()
+        
+        # Wir laden Daten einmal frisch
+        data = load_data()
         
         for u in users:
-            c.execute("SELECT * FROM leads WHERE username=?", (u,))
-            row = c.fetchone()
-            if row:
-                sync_single_lead(cl, c, row)
-                conn.commit()
+            # Finde User in leads
+            lead = next((l for l in data['leads'] if l['username'] == u), None)
+            if lead:
+                updated = sync_single_lead_logic(cl, lead)
+                if updated:
+                    # Muss nicht explizit zurückgeschrieben werden da 'lead' Referenz ist,
+                    # aber wir müssen save_data aufrufen
+                    save_data(data) 
+            
             processed += 1
             JOBS[job_id]['found'] = processed
             JOBS[job_id]['message'] = f'Pruefe {u} ({processed}/{len(users)})'
         
-        conn.close()
         JOBS[job_id]['status'] = 'finished'
         JOBS[job_id]['message'] = 'Fertig.'
 
     threading.Thread(target=run_sync_job, args=(job_id, usernames)).start()
-    
     return jsonify({"success": True, "job_id": job_id})
 
 def add_lead_logic(username):
-    print(f"Versuche manuell hinzuzufuegen: {username}")
     cl = Client(token=API_KEY)
-    conn = get_db()
-    c = conn.cursor()
     try:
         user = cl.user_by_username_v1(username)
-        if not user:
-            print(f"User {username} nicht auf Instagram gefunden.")
+        if not user: return
+        
+        pk = user.get('pk')
+        data = load_data()
+        
+        if any(l['pk'] == pk for l in data['leads']):
+            print(f"User {username} existiert schon.")
             return
 
-        pk = user.get('pk')
+        bio = user.get('biography', '')
+        email = user.get('public_email', '') or extract_email(bio)
         
-        c.execute("SELECT pk FROM leads WHERE pk=?", (pk,))
-        if not c.fetchone():
-            bio = user.get('biography', '')
-            email = user.get('public_email', '') or extract_email(bio)
-            followers = user.get('follower_count', 0)
-            is_private = 1 if user.get('is_private') else 0
-            external_url = user.get('external_url', '')
-
-            c.execute('''INSERT INTO leads 
-                            (pk, username, full_name, bio, email, is_private, followers_count, source_account, found_date, last_scraped_date, status, change_details, external_url)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                            (pk, user['username'], user['full_name'], bio, email, is_private, followers, 'manually_added', datetime.now().isoformat(), datetime.now().isoformat(), 'new', '', external_url))
-            conn.commit()
-            print(f"Manuell hinzugefuegt: {username}")
-        else:
-            print(f"User {username} existiert schon in der DB.")
+        new_lead = {
+            "pk": pk,
+            "id": f"user_{pk}",
+            "username": user['username'],
+            "fullName": user['full_name'],
+            "bio": bio,
+            "email": email,
+            "isPrivate": bool(user.get('is_private')),
+            "followersCount": user.get('follower_count', 0),
+            "sourceAccount": 'manually_added',
+            "foundDate": datetime.now().isoformat(),
+            "lastScrapedDate": datetime.now().isoformat(),
+            "status": "new",
+            "changeDetails": "",
+            "externalUrl": user.get('external_url', ''),
+            "avatar": f"https://api.dicebear.com/7.x/initials/svg?seed={user['username']}"
+        }
+        
+        data['leads'].append(new_lead)
+        save_data(data)
+        print(f"Manuell hinzugefuegt: {username}")
+        
     except Exception as e:
-        print(f"Fehler beim manuellen Hinzufuegen von {username}: {e}")
-    finally:
-        conn.close()
+        print(f"Fehler add_lead: {e}")
 
 @app.route('/api/add-lead', methods=['POST'])
 def add_lead():
     username = request.json.get('username')
     if not username: return jsonify({"error": "Missing username"}), 400
-    
-    # Synchron ausführen für direktes Feedback
     try:
         add_lead_logic(username)
-        return jsonify({"message": f"{username} wurde hinzugefügt (oder existierte bereits).", "success": True})
+        return jsonify({"message": f"OK", "success": True})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -387,27 +405,37 @@ def mark_exported():
     usernames = request.json.get('usernames', [])
     if not usernames: return jsonify({"error": "No usernames"}), 400
     
-    conn = get_db()
+    data = load_data()
     now = datetime.now().isoformat()
-    # Nutze executemany für Performance
-    conn.executemany("UPDATE leads SET last_exported=? WHERE username=?", [(now, u) for u in usernames])
-    conn.commit()
-    conn.close()
+    
+    count = 0
+    for lead in data['leads']:
+        if lead['username'] in usernames:
+            lead['lastExported'] = now
+            count += 1
+            
+    save_data(data)
     return jsonify({"success": True})
 
 @app.route('/api/delete-users', methods=['POST'])
 def delete_users():
-    pks = request.json.get('pks', [])
+    pks = request.json.get('pks', []) # Erwartet Array von IDs (PKs als Integer oder Strings)
     if not pks: return jsonify({"error": "No IDs"}), 400
     
-    conn = get_db()
-    # Erstelle Platzhalter String (?,?,?)
-    placeholders = ','.join('?' * len(pks))
-    sql = f"DELETE FROM leads WHERE pk IN ({placeholders})"
-    conn.execute(sql, pks)
-    conn.commit()
-    conn.close()
-    return jsonify({"success": True, "deleted": len(pks)})
+    # Stelle sicher dass Vergleichstypen passen (PKs in JSON sind meist Int, vom Frontend evtl String?)
+    # Wir casten sicherheitshalber zu String für den Vergleich, wenn PK im JSON Int ist.
+    # Aber besser: Wir schauen was im JSON steht. Meist Int.
+    
+    data = load_data()
+    initial_len = len(data['leads'])
+    
+    # Filter: Behalte nur Leads, deren PK NICHT in der Lösch-Liste ist
+    data['leads'] = [l for l in data['leads'] if l['pk'] not in pks and str(l['pk']) not in [str(p) for p in pks]]
+    
+    deleted_count = initial_len - len(data['leads'])
+    save_data(data)
+    
+    return jsonify({"success": True, "deleted": deleted_count})
 
 @app.route('/api/job-status/<username>', methods=['GET'])
 def job_status(username):
@@ -418,14 +446,22 @@ def job_status(username):
 
 @app.route('/api/lead/update-status', methods=['POST'])
 def update_status():
-    data = request.json
-    pk = data.get('pk')
-    status = data.get('status')
-    conn = get_db()
-    conn.execute("UPDATE leads SET status=? WHERE pk=?", (status, pk))
-    conn.commit()
-    conn.close()
-    return jsonify({"success": True})
+    data_in = request.json
+    pk = data_in.get('pk')
+    status = data_in.get('status')
+    
+    data = load_data()
+    found = False
+    for lead in data['leads']:
+        if lead['pk'] == pk or str(lead['pk']) == str(pk):
+            lead['status'] = status
+            found = True
+            break
+            
+    if found:
+        save_data(data)
+        return jsonify({"success": True})
+    return jsonify({"error": "Not found"}), 404
 
 # Catch-All Route für React Router (muss nach allen API-Routen kommen)
 @app.route('/', defaults={'path': ''})
@@ -446,5 +482,4 @@ def serve_frontend(path):
     return send_from_directory(app.static_folder, 'index.html')
 
 if __name__ == '__main__':
-    init_db()
     app.run(host='0.0.0.0', port=8000)

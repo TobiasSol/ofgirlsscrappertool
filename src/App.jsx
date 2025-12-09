@@ -345,7 +345,7 @@ export default function App() {
         filtered = filtered.filter(u => 
             (u.username||'').toLowerCase().includes(lower) || 
             (u.bio||'').toLowerCase().includes(lower) ||
-            (u.full_name||'').toLowerCase().includes(lower)
+            (u.fullName||'').toLowerCase().includes(lower)
         );
     }
 
@@ -543,7 +543,7 @@ export default function App() {
                     <div className="bg-white rounded-2xl shadow-xl border border-slate-200 p-6 w-full max-w-lg text-center relative overflow-hidden">
                         <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-purple-500 to-pink-500"></div>
                         <div className="absolute top-4 right-4 bg-slate-100 text-slate-500 text-xs px-2 py-1 rounded-full">
-                            Src: {processedUsers[0].source_account}
+                            Src: {processedUsers[0].sourceAccount}
                         </div>
 
                         <div className="w-24 h-24 bg-slate-200 rounded-full mx-auto flex items-center justify-center text-3xl font-bold text-slate-400 mb-4 mt-4">
@@ -560,9 +560,9 @@ export default function App() {
                         </a>
                         
                         <div className="text-slate-500 mb-4 flex flex-col items-center">
-                            <span className="text-sm">{processedUsers[0].full_name}</span>
+                            <span className="text-sm">{processedUsers[0].fullName}</span>
                             <span className="text-blue-600 font-bold mt-1 text-xs bg-blue-50 px-3 py-1 rounded-full border border-blue-100">
-                                {processedUsers[0].followers_count?.toLocaleString()} Follower
+                                {processedUsers[0].followersCount?.toLocaleString()} Follower
                             </span>
                         </div>
 
@@ -582,14 +582,14 @@ export default function App() {
                         <div className="bg-slate-50 p-6 rounded-xl border border-slate-100 mb-6 text-center">
                             <p className="whitespace-pre-wrap text-slate-700 italic text-sm leading-relaxed mb-4 max-h-40 overflow-y-auto">{processedUsers[0].bio || "-"}</p>
                             
-                            {processedUsers[0].external_url && (
+                            {processedUsers[0].externalUrl && (
                                 <a 
-                                    href={processedUsers[0].external_url} 
+                                    href={processedUsers[0].externalUrl} 
                                     target="_blank" 
                                     rel="noreferrer" 
                                     className="inline-flex items-center gap-1 text-blue-600 font-bold bg-blue-50 px-4 py-2 rounded-full text-sm hover:underline mb-2 border border-blue-100"
                                 >
-                                    <Globe size={16}/> Link öffnen: <span className="underline">{processedUsers[0].external_url.replace(/^https?:\/\//, '')}</span>
+                                    <Globe size={16}/> Link öffnen: <span className="underline">{processedUsers[0].externalUrl.replace(/^https?:\/\//, '')}</span>
                                 </a>
                             )}
                             
@@ -646,10 +646,10 @@ export default function App() {
                                     </div>
                                 </div>
                                 <div className="text-sm text-slate-600 mb-2 whitespace-pre-wrap line-clamp-3">{user.bio}</div>
-                                {user.external_url && <a href={user.external_url} target="_blank" className="text-blue-600 text-xs block mb-1 truncate"><Globe size={12} className="inline"/> Link</a>}
-                                <div className="flex justify-between items-center text-xs text-slate-400 mt-3 border-t pt-2">
-                                    <span>{user.followers_count?.toLocaleString()} Follower</span>
-                                    <span>{formatDate(user.found_date)}</span>
+                                {user.externalUrl && <a href={user.externalUrl} target="_blank" className="text-blue-600 text-xs block mb-1 truncate"><Globe size={12} className="inline"/> Link</a>}
+                                    <div className="flex justify-between items-center text-xs text-slate-400 mt-3 border-t pt-2">
+                                    <span>{user.followersCount?.toLocaleString()} Follower</span>
+                                    <span>{formatDate(user.foundDate)}</span>
                                 </div>
                             </div>
                         )
@@ -681,8 +681,8 @@ export default function App() {
                                             <div className="w-10 h-10 rounded-full bg-slate-200 flex-shrink-0 flex items-center justify-center font-bold text-slate-500 text-sm">{user.username[0].toUpperCase()}</div>
                                             <div className="min-w-0">
                                                 <a href={`https://instagram.com/${user.username}`} target="_blank" className="font-bold text-lg text-slate-900 hover:text-purple-600 hover:underline block truncate">{user.username}</a>
-                                                <div className="text-xs text-slate-400 truncate">{user.full_name}</div>
-                                                <div className="text-[10px] text-slate-300 mt-0.5 truncate">Src: {user.source_account}</div>
+                                                <div className="text-xs text-slate-400 truncate">{user.fullName}</div>
+                                                <div className="text-[10px] text-slate-300 mt-0.5 truncate">Src: {user.sourceAccount}</div>
                                                 {user.status === 'new' && <span className="inline-block mt-1 bg-purple-600 text-white text-[10px] px-1.5 rounded">NEU</span>}
                                             </div>
                                         </div>
@@ -701,23 +701,23 @@ export default function App() {
                                     </td>
 
                                     <td className="p-4 align-top">
-                                        {user.status === 'changed' && <div className="mb-1 text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded inline-block">Update: {user.change_details}</div>}
+                                        {user.status === 'changed' && <div className="mb-1 text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded inline-block">Update: {user.changeDetails}</div>}
                                         <div className="text-slate-600 text-sm whitespace-pre-wrap break-words">{user.bio}</div>
-                                        {user.external_url && (
-                                            <a href={user.external_url} target="_blank" rel="noreferrer" className="mt-2 flex items-center gap-1 text-blue-600 font-bold text-xs hover:underline bg-blue-50 px-2 py-1 rounded w-fit max-w-full truncate">
-                                                <Globe size={12}/> {user.external_url.replace(/^https?:\/\//, '')}
+                                        {user.externalUrl && (
+                                            <a href={user.externalUrl} target="_blank" rel="noreferrer" className="mt-2 flex items-center gap-1 text-blue-600 font-bold text-xs hover:underline bg-blue-50 px-2 py-1 rounded w-fit max-w-full truncate">
+                                                <Globe size={12}/> {user.externalUrl.replace(/^https?:\/\//, '')}
                                             </a>
                                         )}
                                         {user.email && <div className="mt-2 flex items-center gap-1 text-purple-700 font-bold text-xs"><Mail size={12}/> {user.email}</div>}
                                     </td>
 
                                     <td className="p-4 align-top">
-                                        <div className="font-bold text-blue-600">{user.followers_count?.toLocaleString()}</div>
+                                        <div className="font-bold text-blue-600">{user.followersCount?.toLocaleString()}</div>
                                     </td>
 
                                     <td className="p-4 align-top text-xs text-slate-500">
-                                        <div>{formatDate(user.found_date)}</div>
-                                        {user.last_exported && <div className="text-green-600 mt-1">Exp: {formatDate(user.last_exported)}</div>}
+                                        <div>{formatDate(user.foundDate)}</div>
+                                        {user.lastExported && <div className="text-green-600 mt-1">Exp: {formatDate(user.lastExported)}</div>}
                                     </td>
                                 </tr>
                             );
