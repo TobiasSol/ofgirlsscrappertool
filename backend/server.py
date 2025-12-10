@@ -574,4 +574,7 @@ def serve_frontend(path):
         return f"Frontend not built yet. Error: {e}", 500
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8000)
+    # ACHTUNG: Port auf 5000 aendern fuer Konsistenz mit .replit
+    # init_db_if_needed() kann hier aufgerufen werden, da dies nur lokal passiert.
+    init_db_if_needed()
+    app.run(host='0.0.0.0', port=5000)
