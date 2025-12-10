@@ -90,12 +90,20 @@ class Lead(db.Model):
         }
 
 # Tabellen erstellen, falls sie noch nicht existieren
-with app.app_context():
-    try:
-        db.create_all()
-        print("Datenbank Tabellen initialisiert.")
-    except Exception as e:
-        print(f"Fehler bei DB Initialisierung: {e}")
+# ACHTUNG: Das hier nur ausfuehren, wenn man sicher ist oder lokal.
+# Im Deployment kann das den Start blockieren (Timeout), wenn die DB langsam ist.
+def init_db_if_needed():
+    with app.app_context():
+        try:
+            db.create_all()
+            print("Datenbank Tabellen initialisiert.")
+        except Exception as e:
+            print(f"Fehler bei DB Initialisierung: {e}")
+
+# Wir fuehren es nur aus, wenn wir direkt starten (nicht via Gunicorn Import),
+# ODER wir koennten es asynchron machen.
+if __name__ == '__main__':
+    init_db_if_needed()
 
 @app.after_request
 def set_permissions_policy(response):
