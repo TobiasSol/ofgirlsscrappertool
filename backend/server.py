@@ -100,11 +100,6 @@ def init_db_if_needed():
         except Exception as e:
             print(f"Fehler bei DB Initialisierung: {e}")
 
-# Wir fuehren es nur aus, wenn wir direkt starten (nicht via Gunicorn Import),
-# ODER wir koennten es asynchron machen.
-if __name__ == '__main__':
-    init_db_if_needed()
-
 @app.after_request
 def set_permissions_policy(response):
     response.headers['Permissions-Policy'] = 'local-network=()'
@@ -573,8 +568,16 @@ def serve_frontend(path):
     except Exception as e:
         return f"Frontend not built yet. Error: {e}", 500
 
+# --- INITIALISIERUNG ---
+
+# Dies stellt sicher, dass Tabellen auch beim Deployment (Gunicorn) erstellt werden
+with app.app_context():
+    try:
+        db.create_all()
+        print("Datenbank Tabellen initialisiert (Deployment).")
+    except Exception as e:
+        print(f"DB Init Fehler: {e}")
+
 if __name__ == '__main__':
-    # ACHTUNG: Port auf 5000 aendern fuer Konsistenz mit .replit
-    # init_db_if_needed() kann hier aufgerufen werden, da dies nur lokal passiert.
-    init_db_if_needed()
+    # Lokal starten auf Port 5000
     app.run(host='0.0.0.0', port=5000)
