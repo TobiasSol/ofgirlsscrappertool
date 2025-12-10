@@ -136,6 +136,7 @@ export default function App() {
         total: users.length,
         unfiltered: users.filter(u => ['new', 'active', 'changed', 'contacted', 'not_found'].includes(u.status)).length,
         favorites: users.filter(u => u.status === 'favorite').length,
+        eng: users.filter(u => u.status === 'eng').length,
         hidden: users.filter(u => u.status === 'hidden').length,
         blocked: users.filter(u => u.status === 'blocked').length,
         email: users.filter(u => u.email).length
@@ -364,6 +365,7 @@ export default function App() {
             filtered = filtered.filter(u => ['new', 'active', 'changed', 'contacted', 'not_found'].includes(u.status));
             break;
         case 'favorites': filtered = filtered.filter(u => u.status === 'favorite'); break;
+        case 'eng': filtered = filtered.filter(u => u.status === 'eng'); break;
         case 'hidden': filtered = filtered.filter(u => u.status === 'hidden'); break;
         case 'blocked': filtered = filtered.filter(u => u.status === 'blocked'); break;
         case 'email': filtered = filtered.filter(u => u.email && u.status !== 'blocked' && u.status !== 'hidden'); break;
@@ -487,6 +489,7 @@ export default function App() {
             <div className="w-[1px] bg-slate-300 mx-1 flex-shrink-0"></div>
             <TabButton active={activeTab === 'unfiltered'} onClick={() => setActiveTab('unfiltered')} label="Ungefiltert" count={stats.unfiltered} color="purple"/>
             <TabButton active={activeTab === 'favorites'} onClick={() => setActiveTab('favorites')} label="Favoriten" count={stats.favorites} color="yellow"/>
+            <TabButton active={activeTab === 'eng'} onClick={() => setActiveTab('eng')} label="English" count={stats.eng} color="orange" icon={<Globe size={16}/>}/>
             <TabButton active={activeTab === 'email'} onClick={() => setActiveTab('email')} label="Email" count={stats.email} color="blue"/>
             <TabButton active={activeTab === 'hidden'} onClick={() => setActiveTab('hidden')} label="Versteckt" count={stats.hidden} color="slate"/>
             <TabButton active={activeTab === 'blocked'} onClick={() => setActiveTab('blocked')} label="Blockiert" count={stats.blocked} color="red"/>
@@ -531,6 +534,9 @@ export default function App() {
                       </button>
                       <button onClick={() => {setActiveTab('favorites'); setIsMobileMenuOpen(false)}} className={`w-full text-left px-4 py-3 rounded-xl font-bold flex items-center justify-between ${activeTab === 'favorites' ? 'bg-yellow-50 text-yellow-600' : 'text-slate-600 hover:bg-slate-50'}`}>
                           <span>Favoriten</span> <span className="bg-slate-100 px-2 py-0.5 rounded-full text-xs text-slate-500">{stats.favorites}</span>
+                      </button>
+                      <button onClick={() => {setActiveTab('eng'); setIsMobileMenuOpen(false)}} className={`w-full text-left px-4 py-3 rounded-xl font-bold flex items-center justify-between ${activeTab === 'eng' ? 'bg-orange-50 text-orange-600' : 'text-slate-600 hover:bg-slate-50'}`}>
+                          <span>English</span> <span className="bg-slate-100 px-2 py-0.5 rounded-full text-xs text-slate-500">{stats.eng}</span>
                       </button>
                       <button onClick={() => {setActiveTab('email'); setIsMobileMenuOpen(false)}} className={`w-full text-left px-4 py-3 rounded-xl font-bold flex items-center justify-between ${activeTab === 'email' ? 'bg-blue-50 text-blue-600' : 'text-slate-600 hover:bg-slate-50'}`}>
                           <span>Email</span> <span className="bg-slate-100 px-2 py-0.5 rounded-full text-xs text-slate-500">{stats.email}</span>
@@ -665,6 +671,9 @@ export default function App() {
                             <button onClick={() => handleStatusChange(processedUsers[0].pk, 'hidden')} className="flex flex-col items-center gap-1 p-2 rounded-xl bg-slate-100 text-slate-600 border border-slate-200 hover:bg-slate-200 w-20" title="Hide">
                                 <EyeOff size={24}/> <span className="font-bold text-[10px]">HIDE</span>
                             </button>
+                            <button onClick={() => handleStatusChange(processedUsers[0].pk, 'eng')} className="flex flex-col items-center gap-1 p-2 rounded-xl bg-orange-50 text-orange-600 border border-orange-200 hover:bg-orange-100 w-20" title="English">
+                                <Globe size={24}/> <span className="font-bold text-[10px]">ENG</span>
+                            </button>
                             <button onClick={() => handleStatusChange(processedUsers[0].pk, 'favorite')} className="flex flex-col items-center gap-1 p-2 rounded-xl bg-yellow-100 text-yellow-600 border border-yellow-200 hover:bg-yellow-200 w-20" title="Fav">
                                 <Heart size={24} className="fill-yellow-600"/> <span className="font-bold text-[10px]">FAV</span>
                             </button>
@@ -773,6 +782,7 @@ export default function App() {
                                     {/* Action Buttons (Compact) */}
                                     <div className="flex gap-1 flex-shrink-0">
                                         <button onClick={() => handleStatusChange(user.pk, user.status === 'favorite' ? 'active' : 'favorite')} className={`p-2 rounded-lg border ${isFavorite ? 'bg-yellow-400 border-yellow-500 text-white' : 'bg-white border-slate-200 text-slate-300'}`}><Heart size={16} className={isFavorite ? 'fill-white' : ''}/></button>
+                                        <button onClick={() => handleStatusChange(user.pk, user.status === 'eng' ? 'active' : 'eng')} className={`p-2 rounded-lg border ${user.status === 'eng' ? 'bg-orange-400 border-orange-500 text-white' : 'bg-white border-slate-200 text-slate-300'}`}><Globe size={16}/></button>
                                         <button onClick={() => handleStatusChange(user.pk, 'blocked')} className="p-2 bg-white border border-slate-200 rounded-lg text-slate-300 hover:text-red-500 hover:bg-red-50"><Ban size={16}/></button>
                                         <button onClick={() => handleStatusChange(user.pk, user.status === 'hidden' ? 'active' : 'hidden')} className="p-2 bg-white border border-slate-200 rounded-lg text-slate-300 hover:text-slate-600 hover:bg-slate-50">{user.status === 'hidden' ? <EyeOff size={16} className="text-slate-600"/> : <EyeOff size={16}/>}</button>
                                     </div>
@@ -848,6 +858,9 @@ export default function App() {
                                         <div className="flex flex-wrap gap-2">
                                             <button onClick={() => handleStatusChange(user.pk, user.status === 'favorite' ? 'active' : 'favorite')} className={`p-2 rounded-lg border shadow-sm transition-colors ${user.status === 'favorite' ? 'bg-yellow-400 border-yellow-500 text-white' : 'bg-white border-slate-200 text-slate-400 hover:bg-yellow-50 hover:text-yellow-500'}`} title="Favorit">
                                                 <Heart size={18} className={user.status === 'favorite' ? 'fill-white' : ''}/>
+                                            </button>
+                                            <button onClick={() => handleStatusChange(user.pk, user.status === 'eng' ? 'active' : 'eng')} className={`p-2 rounded-lg border shadow-sm transition-colors ${user.status === 'eng' ? 'bg-orange-400 border-orange-500 text-white' : 'bg-white border-slate-200 text-slate-400 hover:bg-orange-50 hover:text-orange-500'}`} title="English">
+                                                <Globe size={18}/>
                                             </button>
                                             <button onClick={() => handleStatusChange(user.pk, 'blocked')} className="p-2 bg-white border border-slate-200 rounded-lg shadow-sm text-slate-400 hover:bg-red-50 hover:text-red-600 hover:border-red-200" title="Blockieren"><Ban size={18}/></button>
                                             <button onClick={() => handleStatusChange(user.pk, user.status === 'hidden' ? 'active' : 'hidden')} className="p-2 bg-white border border-slate-200 rounded-lg shadow-sm text-slate-400 hover:bg-slate-100 hover:text-slate-600" title={user.status === 'hidden' ? 'Anzeigen' : 'Verstecken'}>
