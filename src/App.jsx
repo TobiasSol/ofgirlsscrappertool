@@ -665,17 +665,17 @@ export default function App() {
 
                         {/* TOP ACTION BUTTONS */}
                         <div className="flex justify-center gap-3 mb-6">
+                            <button onClick={() => handleStatusChange(processedUsers[0].pk, 'favorite')} className="flex flex-col items-center gap-1 p-2 rounded-xl bg-yellow-100 text-yellow-600 border border-yellow-200 hover:bg-yellow-200 w-20" title="Fav">
+                                <Heart size={24} className="fill-yellow-600"/> <span className="font-bold text-[10px]">FAV</span>
+                            </button>
+                            <button onClick={() => handleStatusChange(processedUsers[0].pk, 'eng')} className="flex flex-col items-center gap-1 p-2 rounded-xl bg-orange-50 text-orange-600 border border-orange-200 hover:bg-orange-100 w-20" title="English">
+                                <Globe size={24}/> <span className="font-bold text-[10px]">ENG</span>
+                            </button>
                             <button onClick={() => handleStatusChange(processedUsers[0].pk, 'blocked')} className="flex flex-col items-center gap-1 p-2 rounded-xl bg-red-50 text-red-600 border border-red-200 hover:bg-red-100 w-20" title="Block">
                                 <Ban size={24}/> <span className="font-bold text-[10px]">BLOCK</span>
                             </button>
                             <button onClick={() => handleStatusChange(processedUsers[0].pk, 'hidden')} className="flex flex-col items-center gap-1 p-2 rounded-xl bg-slate-100 text-slate-600 border border-slate-200 hover:bg-slate-200 w-20" title="Hide">
                                 <EyeOff size={24}/> <span className="font-bold text-[10px]">HIDE</span>
-                            </button>
-                            <button onClick={() => handleStatusChange(processedUsers[0].pk, 'eng')} className="flex flex-col items-center gap-1 p-2 rounded-xl bg-orange-50 text-orange-600 border border-orange-200 hover:bg-orange-100 w-20" title="English">
-                                <Globe size={24}/> <span className="font-bold text-[10px]">ENG</span>
-                            </button>
-                            <button onClick={() => handleStatusChange(processedUsers[0].pk, 'favorite')} className="flex flex-col items-center gap-1 p-2 rounded-xl bg-yellow-100 text-yellow-600 border border-yellow-200 hover:bg-yellow-200 w-20" title="Fav">
-                                <Heart size={24} className="fill-yellow-600"/> <span className="font-bold text-[10px]">FAV</span>
                             </button>
                         </div>
 
@@ -828,7 +828,7 @@ export default function App() {
                         <tr>
                             <th className="p-4 relative w-12"><input type="checkbox" checked={selectedUsers.length === processedUsers.length && processedUsers.length > 0} onChange={toggleSelectAll} className="w-4 h-4 rounded accent-purple-600"/><ResizeHandle id="select"/></th>
                             <th className="p-4 relative hover:bg-slate-100" style={{ width: colWidths.user }}>User <ResizeHandle id="user"/></th>
-                            <th className="p-4 relative" style={{ width: colWidths.actions }}>Aktionen X <ResizeHandle id="actions"/></th>
+                            <th className="p-4 relative" style={{ width: colWidths.actions }}>Aktionen XX <ResizeHandle id="actions"/></th>
                             <th className="p-4 relative" style={{ width: colWidths.bio }}>Bio <ResizeHandle id="bio"/></th>
                             <th className="p-4 relative hover:bg-slate-100" style={{ width: colWidths.follower }}>Follower <ResizeHandle id="follower"/></th>
                             <th className="p-4 relative hover:bg-slate-100" style={{ width: colWidths.date }}>Datum <ResizeHandle id="date"/></th>
