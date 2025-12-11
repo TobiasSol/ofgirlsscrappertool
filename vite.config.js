@@ -10,7 +10,7 @@ export default defineConfig({
     // Der Proxy leitet alle /api Anfragen an dein Python Backend weiter
     proxy: {
       '/api': {
-        target: 'http://127.0.0.1:8000', // Python läuft auf Port 8000
+        target: 'http://127.0.0.1:5000', // Python läuft auf Port 5000
         changeOrigin: true,
         secure: false,
       }
