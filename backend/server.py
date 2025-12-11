@@ -579,5 +579,5 @@ with app.app_context():
         print(f"DB Init Fehler: {e}")
 
 if __name__ == '__main__':
-    # Lokal starten auf Port 5000
-    app.run(host='0.0.0.0', port=5000)
+    # Lokal starten auf Port 8000
+    app.run(host='0.0.0.0', port=8000)
