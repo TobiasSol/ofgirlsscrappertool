@@ -828,7 +828,7 @@ export default function App() {
                         <tr>
                             <th className="p-4 relative w-12"><input type="checkbox" checked={selectedUsers.length === processedUsers.length && processedUsers.length > 0} onChange={toggleSelectAll} className="w-4 h-4 rounded accent-purple-600"/><ResizeHandle id="select"/></th>
                             <th className="p-4 relative hover:bg-slate-100" style={{ width: colWidths.user }}>User <ResizeHandle id="user"/></th>
-                            <th className="p-4 relative" style={{ width: colWidths.actions }}>Aktionen XX <ResizeHandle id="actions"/></th>
+                            <th className="p-4 relative" style={{ width: colWidths.actions }}>Aktionen<ResizeHandle id="actions"/></th>
                             <th className="p-4 relative" style={{ width: colWidths.bio }}>Bio <ResizeHandle id="bio"/></th>
                             <th className="p-4 relative hover:bg-slate-100" style={{ width: colWidths.follower }}>Follower <ResizeHandle id="follower"/></th>
                             <th className="p-4 relative hover:bg-slate-100" style={{ width: colWidths.date }}>Datum <ResizeHandle id="date"/></th>
