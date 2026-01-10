@@ -10,6 +10,10 @@ from flask_cors import CORS
 from hikerapi import Client
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy.orm import DeclarativeBase
+from dotenv import load_dotenv
+
+# Env laden (fuer lokale Entwicklung)
+load_dotenv()
 
 # --- KONFIGURATION ---
 API_KEY = os.environ.get("HIKERAPI_TOKEN", "y0a9buus1f3z0vx3gqodr8lh11vvsxyh")
@@ -579,5 +583,5 @@ with app.app_context():
         print(f"DB Init Fehler: {e}")
 
 if __name__ == '__main__':
-    # Lokal starten auf Port 8000
-    app.run(host='0.0.0.0', port=8000)
+    # Lokal starten auf Port 5000
+    app.run(host='0.0.0.0', port=5000)

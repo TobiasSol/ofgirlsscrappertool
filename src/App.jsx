@@ -81,7 +81,8 @@ export default function App() {
   const [selectedUsers, setSelectedUsers] = useState([]); 
   
   // Sorting
-  const [sortConfig, setSortConfig] = useState({ key: 'found_date', direction: 'desc' });
+  const [sortConfig, setSortConfig] = useState({ key: 'foundDate', direction: 'desc' });
+  const [hideEnglishInEmail, setHideEnglishInEmail] = useState(false);
   
   // Progress State
   const [activeJob, setActiveJob] = useState(null);
@@ -368,7 +369,14 @@ export default function App() {
         case 'eng': filtered = filtered.filter(u => u.status === 'eng'); break;
         case 'hidden': filtered = filtered.filter(u => u.status === 'hidden'); break;
         case 'blocked': filtered = filtered.filter(u => u.status === 'blocked'); break;
-        case 'email': filtered = filtered.filter(u => u.email && u.status !== 'blocked' && u.status !== 'hidden'); break;
+        case 'email': 
+            filtered = filtered.filter(u => u.email && u.status !== 'blocked' && u.status !== 'hidden'); 
+            if (hideEnglishInEmail) {
+                // HIER IST DER FIX: Filtere alle User raus, deren Status 'eng' ist.
+                // Das wurde vorher nicht korrekt angewendet oder ueberschrieben.
+                filtered = filtered.filter(u => u.status !== 'eng');
+            }
+            break;
         case 'export':
             if (selectedUsers.length > 0) filtered = filtered.filter(u => selectedUsers.includes(u.pk));
             else filtered = []; 
@@ -581,6 +589,21 @@ export default function App() {
                     <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                     <input type="text" placeholder="Suchen..." className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm outline-none focus:border-purple-500" value={filterText} onChange={(e) => setFilterText(e.target.value)} />
                 </div>
+                
+                {activeTab === 'email' && (
+                    <label className="flex items-center gap-2 bg-white border border-slate-200 px-3 py-2 rounded-lg cursor-pointer hover:bg-slate-50 select-none shadow-sm transition-colors">
+                        <input 
+                            type="checkbox" 
+                            checked={hideEnglishInEmail} 
+                            onChange={(e) => setHideEnglishInEmail(e.target.checked)} 
+                            className="w-4 h-4 rounded accent-purple-600 cursor-pointer"
+                        />
+                        <span className="text-sm font-medium text-slate-600 flex items-center gap-1">
+                            <Globe size={14}/> Ohne ENG
+                        </span>
+                    </label>
+                )}
+
                 {selectedUsers.length > 0 && (
                     <div className="flex items-center gap-2 bg-purple-50 px-3 py-1.5 rounded-lg border border-purple-100 animate-in fade-in w-full md:w-auto justify-between md:justify-start">
                         <span className="text-purple-800 text-sm font-bold whitespace-nowrap">{selectedUsers.length} markiert</span>
@@ -827,11 +850,33 @@ export default function App() {
                     <thead className="bg-slate-50 text-slate-500 font-bold border-b border-slate-200 uppercase tracking-wider text-sm">
                         <tr>
                             <th className="p-4 relative w-12"><input type="checkbox" checked={selectedUsers.length === processedUsers.length && processedUsers.length > 0} onChange={toggleSelectAll} className="w-4 h-4 rounded accent-purple-600"/><ResizeHandle id="select"/></th>
-                            <th className="p-4 relative hover:bg-slate-100" style={{ width: colWidths.user }}>User <ResizeHandle id="user"/></th>
+                            
+                            <th className="p-4 relative hover:bg-slate-100 cursor-pointer group" style={{ width: colWidths.user }} onClick={() => requestSort('username')}>
+                                <div className="flex items-center gap-1">
+                                    User
+                                    {sortConfig.key === 'username' && <ArrowUpDown size={14} className={sortConfig.direction === 'asc' ? 'rotate-180' : ''}/>}
+                                </div>
+                                <ResizeHandle id="user"/>
+                            </th>
+
                             <th className="p-4 relative" style={{ width: colWidths.actions }}>Aktionen<ResizeHandle id="actions"/></th>
                             <th className="p-4 relative" style={{ width: colWidths.bio }}>Bio <ResizeHandle id="bio"/></th>
-                            <th className="p-4 relative hover:bg-slate-100" style={{ width: colWidths.follower }}>Follower <ResizeHandle id="follower"/></th>
-                            <th className="p-4 relative hover:bg-slate-100" style={{ width: colWidths.date }}>Datum <ResizeHandle id="date"/></th>
+                            
+                            <th className="p-4 relative hover:bg-slate-100 cursor-pointer group" style={{ width: colWidths.follower }} onClick={() => requestSort('followersCount')}>
+                                <div className="flex items-center gap-1">
+                                    Follower
+                                    {sortConfig.key === 'followersCount' && <ArrowUpDown size={14} className={sortConfig.direction === 'asc' ? 'rotate-180' : ''}/>}
+                                </div>
+                                <ResizeHandle id="follower"/>
+                            </th>
+
+                            <th className="p-4 relative hover:bg-slate-100 cursor-pointer group" style={{ width: colWidths.date }} onClick={() => requestSort('foundDate')}>
+                                <div className="flex items-center gap-1">
+                                    Datum
+                                    {sortConfig.key === 'foundDate' && <ArrowUpDown size={14} className={sortConfig.direction === 'asc' ? 'rotate-180' : ''}/>}
+                                </div>
+                                <ResizeHandle id="date"/>
+                            </th>
                         </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 text-base">
