@@ -6,11 +6,10 @@ export default defineConfig({
   plugins: [react()],
   server: {
     host: '0.0.0.0',
-    allowedHosts: true, // WICHTIG für Replit!
-    // Der Proxy leitet alle /api Anfragen an dein Python Backend weiter
+    allowedHosts: true,
     proxy: {
       '/api': {
-        target: 'http://127.0.0.1:5000', // Python läuft auf Port 5000
+        target: 'http://127.0.0.1:8000', // Wieder auf Port 8000 (Standard)
         changeOrigin: true,
         secure: false,
       }

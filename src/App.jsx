@@ -78,6 +78,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('unfiltered'); 
   const [filterText, setFilterText] = useState('');
   const [newTarget, setNewTarget] = useState("");
+  const [manualUsername, setManualUsername] = useState(""); // NEU: Eigenes Feld fuer Manuell
   const [selectedUsers, setSelectedUsers] = useState([]); 
   
   // Sorting
@@ -135,9 +136,10 @@ export default function App() {
   const stats = useMemo(() => {
     return {
         total: users.length,
-        unfiltered: users.filter(u => ['new', 'active', 'changed', 'contacted', 'not_found'].includes(u.status)).length,
-        favorites: users.filter(u => u.status === 'favorite').length,
-        eng: users.filter(u => u.status === 'eng').length,
+    unfiltered: users.filter(u => ['new', 'active', 'changed', 'contacted', 'not_found'].includes(u.status)).length,
+    favorites: users.filter(u => u.status === 'favorite').length,
+    dach: users.filter(u => u.isGerman).length,
+    eng: users.filter(u => u.status === 'eng').length,
         hidden: users.filter(u => u.status === 'hidden').length,
         blocked: users.filter(u => u.status === 'blocked').length,
         email: users.filter(u => u.email).length
@@ -210,7 +212,7 @@ export default function App() {
     if (activeJob && !['finished', 'error'].includes(activeJob.status)) {
       interval = setInterval(async () => {
         try {
-          const res = await fetch(`${API_URL}/job-status/${activeJob.username}`);
+          const res = await fetch(`${API_URL}/get-job-status?username=${encodeURIComponent(activeJob.username)}`);
           const data = await res.json();
           if (data.status) {
             setActiveJob(prev => ({ ...prev, ...data }));
@@ -260,6 +262,37 @@ export default function App() {
         }
     } catch (e) { alert("Fehler beim Sync."); } 
     finally { setLoading(false); }
+  };
+
+  const handleDachScan = async () => {
+    let usersToScan = [];
+    if (selectedUsers.length > 0) {
+        usersToScan = users.filter(u => selectedUsers.includes(u.pk));
+    } else {
+        usersToScan = processedUsers; 
+    }
+    if (usersToScan.length === 0) return alert("Keine User zum Scannen.");
+    
+    const usernames = usersToScan.map(u => u.username);
+    setLoading(true);
+    try {
+        const res = await fetch(`${API_URL}/analyze-german`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ usernames })
+        });
+        const data = await res.json();
+        if (data.success && data.job_id) {
+             setActiveJob({ username: data.job_id, status: 'running', found: 0, message: 'Startet DACH-Scan...' });
+             if (selectedUsers.length > 0) setSelectedUsers([]);
+        } else {
+            alert("Fehler beim Starten.");
+        }
+    } catch (e) {
+        alert("Fehler: " + e);
+    } finally {
+        setLoading(false);
+    }
   };
 
   const handleDeleteSelected = async () => {
@@ -327,7 +360,7 @@ export default function App() {
         const data = await res.json();
         if (data.success) {
             alert(`Erfolg: ${data.message}`);
-            setNewTarget("");
+            setManualUsername(""); // Feld leeren
             loadData(); 
         } else {
             alert(`Fehler: ${data.error || "Unbekannt"}`);
@@ -365,6 +398,9 @@ export default function App() {
         case 'unfiltered':
             filtered = filtered.filter(u => ['new', 'active', 'changed', 'contacted', 'not_found'].includes(u.status));
             break;
+        case 'dach':
+            filtered = filtered.filter(u => u.isGerman);
+            break;
         case 'favorites': filtered = filtered.filter(u => u.status === 'favorite'); break;
         case 'eng': filtered = filtered.filter(u => u.status === 'eng'); break;
         case 'hidden': filtered = filtered.filter(u => u.status === 'hidden'); break;
@@ -393,6 +429,10 @@ export default function App() {
     }
 
     return [...filtered].sort((a, b) => {
+        if (activeTab === 'unfiltered' && sortConfig.key === 'foundDate') {
+            if (a.isGerman && !b.isGerman) return -1;
+            if (!a.isGerman && b.isGerman) return 1;
+        }
         let aVal = a[sortConfig.key];
         let bVal = b[sortConfig.key];
         if (aVal == null) aVal = ""; if (bVal == null) bVal = "";
@@ -481,6 +521,40 @@ export default function App() {
       
       {!appReady && <Preloader />}
 
+      {/* GLOBAL LOADING OVERLAY */}
+      {activeJob && !['finished', 'error'].includes(activeJob.status) && (
+          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[100] flex flex-col items-center justify-center p-6 text-center animate-in fade-in duration-300">
+              <div className="bg-white p-8 rounded-3xl shadow-2xl max-w-sm w-full space-y-6">
+                  <div className="relative mx-auto w-20 h-20">
+                      <div className="absolute inset-0 border-4 border-purple-100 rounded-full"></div>
+                      <div className="absolute inset-0 border-4 border-purple-600 rounded-full border-t-transparent animate-spin"></div>
+                      <Instagram className="absolute inset-0 m-auto text-purple-600 animate-pulse" size={32} />
+                  </div>
+                  
+                  <div className="space-y-2">
+                      <h2 className="text-xl font-bold text-slate-800">Analyse läuft...</h2>
+                      <p className="text-slate-500 font-medium">{activeJob.message || "Bitte warten"}</p>
+                  </div>
+
+                  {activeJob.total > 0 && (
+                      <div className="space-y-2">
+                          <div className="flex justify-between text-xs font-bold text-slate-400">
+                              <span>Fortschritt</span>
+                              <span>{Math.round((activeJob.found / activeJob.total) * 100)}%</span>
+                          </div>
+                          <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden">
+                              <div 
+                                  className="bg-purple-600 h-full transition-all duration-500" 
+                                  style={{ width: `${(activeJob.found / activeJob.total) * 100}%` }}
+                              ></div>
+                          </div>
+                          <p className="text-[10px] text-slate-400 uppercase tracking-widest">{activeJob.found} von {activeJob.total} Usern</p>
+                      </div>
+                  )}
+              </div>
+          </div>
+      )}
+
       {/* HEADER */}
       <nav className="bg-white border-b border-slate-200 sticky top-0 z-30 px-4 md:px-6 py-4 flex items-center justify-between shadow-sm gap-4">
         <div className="flex items-center gap-2">
@@ -496,6 +570,7 @@ export default function App() {
             <TabButton active={activeTab === 'review'} onClick={() => setActiveTab('review')} label="Review" color="pink" icon={<Play size={16}/>} />
             <div className="w-[1px] bg-slate-300 mx-1 flex-shrink-0"></div>
             <TabButton active={activeTab === 'unfiltered'} onClick={() => setActiveTab('unfiltered')} label="Ungefiltert" count={stats.unfiltered} color="purple"/>
+            <TabButton active={activeTab === 'dach'} onClick={() => setActiveTab('dach')} label="DACH" count={stats.dach} color="orange" icon={<Globe size={16}/>}/>
             <TabButton active={activeTab === 'favorites'} onClick={() => setActiveTab('favorites')} label="Favoriten" count={stats.favorites} color="yellow"/>
             <TabButton active={activeTab === 'eng'} onClick={() => setActiveTab('eng')} label="English" count={stats.eng} color="orange" icon={<Globe size={16}/>}/>
             <TabButton active={activeTab === 'email'} onClick={() => setActiveTab('email')} label="Email" count={stats.email} color="blue"/>
@@ -581,14 +656,18 @@ export default function App() {
 
       <main className="w-full px-4 md:px-8 py-6 space-y-6">
         
-        {/* CONTROLS */}
+        {/* CONTROLS - Now Sticky */}
         {activeTab !== 'review' && (
-        <div className="flex flex-col md:flex-row justify-between items-center bg-white p-3 rounded-xl shadow-sm border border-slate-200 gap-3">
+        <div className="sticky top-[73px] z-20 flex flex-col md:flex-row justify-between items-center bg-white/90 backdrop-blur-md p-3 rounded-xl shadow-md border border-slate-200 gap-3 mb-6">
             <div className="flex flex-col md:flex-row items-center gap-4 w-full md:w-auto">
                 <div className="relative w-full md:w-72">
                     <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                     <input type="text" placeholder="Suchen..." className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm outline-none focus:border-purple-500" value={filterText} onChange={(e) => setFilterText(e.target.value)} />
                 </div>
+
+                <button onClick={handleDachScan} className="bg-orange-50 text-orange-600 border border-orange-200 hover:bg-orange-100 px-3 py-2 rounded-lg text-sm font-bold flex items-center gap-2 whitespace-nowrap" title="DACH-Analyse starten">
+                    <Globe size={16}/> {selectedUsers.length > 0 ? `${selectedUsers.length} Scannen` : "Alle Scannen"}
+                </button>
                 
                 {activeTab === 'email' && (
                     <label className="flex items-center gap-2 bg-white border border-slate-200 px-3 py-2 rounded-lg cursor-pointer hover:bg-slate-50 select-none shadow-sm transition-colors">
@@ -645,12 +724,12 @@ export default function App() {
                         type="text" 
                         placeholder="Instagram Username" 
                         className="flex-1 px-4 py-3 border border-slate-300 rounded-lg outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200"
-                        value={newTarget}
-                        onChange={e => setNewTarget(e.target.value)}
-                        onKeyDown={e => e.key === 'Enter' && handleManualAdd(newTarget)}
+                        value={manualUsername}
+                        onChange={e => setManualUsername(e.target.value)}
+                        onKeyDown={e => e.key === 'Enter' && handleManualAdd(manualUsername)}
                     />
                     <button 
-                        onClick={() => handleManualAdd(newTarget)} 
+                        onClick={() => handleManualAdd(manualUsername)} 
                         className="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-3 rounded-lg font-bold"
                     >
                         {loading ? <Loader2 className="animate-spin"/> : "Add"}
@@ -786,8 +865,10 @@ export default function App() {
                     {processedUsers.map((user) => {
                         const isSelected = selectedUsers.includes(user.pk);
                         const isFavorite = user.status === 'favorite';
+                        const isGerman = user.isGerman;
+                        const isNotGerman = user.isGerman === false; // NEU: Explizit false (nicht null)
                         return (
-                            <div key={user.pk} className={`border rounded-xl p-4 shadow-sm transition-all ${isSelected ? 'bg-purple-50 border-purple-200 ring-1 ring-purple-200' : 'bg-white border-slate-100'} ${isFavorite ? 'bg-yellow-50/50' : ''}`}>
+                            <div key={user.pk} className={`border rounded-xl p-4 shadow-sm transition-all hover:bg-green-50/50 ${isSelected ? 'bg-purple-50 border-purple-200 ring-1 ring-purple-200' : 'bg-white border-slate-100'} ${isFavorite ? 'bg-yellow-50/50' : ''} ${isGerman ? 'bg-yellow-100/60 border-yellow-200' : ''} ${isNotGerman ? 'bg-red-50/50 border-red-100' : ''}`}>
                                 
                                 {/* Header: Checkbox, Name, Badges */}
                                 <div className="flex justify-between items-start mb-3">
@@ -797,8 +878,16 @@ export default function App() {
                                             <div className="flex items-center gap-2">
                                                 <div className="font-bold text-lg truncate text-slate-800">{user.username}</div>
                                                 {user.status === 'new' && <span className="bg-purple-600 text-white text-[10px] px-1.5 py-0.5 rounded font-bold flex-shrink-0">NEU</span>}
+                                                {isGerman && <span className="bg-orange-500 text-white text-[10px] px-1.5 py-0.5 rounded font-bold flex-shrink-0 flex items-center gap-1" title={user.germanCheckResult}>🇩🇪 DACH</span>}
+                                                {isNotGerman && <span className="bg-red-100 text-red-600 text-[10px] px-1.5 py-0.5 rounded font-bold flex-shrink-0 border border-red-200">NO DE</span>}
                                             </div>
                                             <div className="text-xs text-slate-400 truncate">{user.fullName}</div>
+                                            {/* Nur anzeigen wenn Deutsch oder Fehler, nicht bei 'Nicht erkannt' */}
+                                            {user.germanCheckResult && (isGerman || user.germanCheckResult.includes('Fehler')) && (
+                                                <div className={`text-[10px] mt-1 font-medium break-words whitespace-normal ${isGerman ? 'text-orange-600' : 'text-red-400'}`}>
+                                                    {isGerman ? "🇩🇪 " : "Scan: "}{user.germanCheckResult}
+                                                </div>
+                                            )}
                                         </div>
                                     </div>
                                     
@@ -883,18 +972,32 @@ export default function App() {
                         {processedUsers.map((user) => {
                             const isSelected = selectedUsers.includes(user.pk);
                             const isFavorite = user.status === 'favorite';
+                            const isGerman = user.isGerman;
+                            const isNotGerman = user.isGerman === false;
+
                             return (
-                                <tr key={user.pk} className={`group transition-colors ${isSelected ? 'bg-purple-50' : 'hover:bg-slate-50'} ${isFavorite ? 'bg-yellow-50' : ''}`}>
+                                <tr key={user.pk} className={`group transition-colors ${isSelected ? 'bg-purple-50' : 'hover:bg-green-50'} ${isFavorite ? 'bg-yellow-50' : ''} ${isGerman && !isFavorite && !isSelected ? 'bg-yellow-100/60' : ''} ${isNotGerman && !isSelected ? 'bg-red-50/40' : ''}`}>
                                     <td className="p-4 align-top"><input type="checkbox" checked={isSelected} onChange={() => toggleSelectUser(user.pk)} className="w-4 h-4 rounded accent-purple-600 mt-2"/></td>
                                     
                                     <td className="p-4 align-top overflow-hidden">
                                         <div className="flex items-center gap-3">
                                             <div className="w-10 h-10 rounded-full bg-slate-200 flex-shrink-0 flex items-center justify-center font-bold text-slate-500 text-sm">{user.username[0].toUpperCase()}</div>
                                             <div className="min-w-0">
-                                                <a href={`https://instagram.com/${user.username}`} target="_blank" className="font-bold text-lg text-slate-900 hover:text-purple-600 hover:underline block truncate">{user.username}</a>
+                                                <div className="flex items-center gap-2">
+                                                    <a href={`https://instagram.com/${user.username}`} target="_blank" className="font-bold text-lg text-slate-900 hover:text-purple-600 hover:underline block truncate">{user.username}</a>
+                                                    {isGerman && <span className="bg-orange-100 text-orange-700 border border-orange-200 text-[10px] px-1.5 rounded font-bold cursor-help" title={user.germanCheckResult}>🇩🇪</span>}
+                                                    {isNotGerman && <span className="text-red-500 text-[10px] font-bold border border-red-200 bg-red-50 px-1 rounded">NO DE</span>}
+                                                </div>
+                                                
                                                 <div className="text-xs text-slate-400 truncate">{user.fullName}</div>
                                                 <div className="text-[10px] text-slate-300 mt-0.5 truncate">Src: {user.sourceAccount}</div>
                                                 {user.status === 'new' && <span className="inline-block mt-1 bg-purple-600 text-white text-[10px] px-1.5 rounded">NEU</span>}
+                                                {/* Nur anzeigen wenn Deutsch oder Fehler */}
+                                                {user.germanCheckResult && (isGerman || isNotGerman || user.germanCheckResult.includes('Fehler')) && (
+                                                    <div className={`text-[10px] mt-1 font-medium break-words whitespace-normal ${isGerman ? 'text-orange-600' : isNotGerman ? 'text-red-400' : 'text-red-400'}`}>
+                                                        {isGerman ? "🇩🇪 " : isNotGerman ? "✘ " : "Scan: "}{user.germanCheckResult}
+                                                    </div>
+                                                )}
                                             </div>
                                         </div>
                                     </td>
