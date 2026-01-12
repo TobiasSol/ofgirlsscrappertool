@@ -171,8 +171,8 @@ def analyze_with_ai(text=None, image_url=None):
             payload = {
                 "model": "gpt-4o-mini",
                 "messages": [
-                    {"role": "system", "content": "Du bist ein Experte für DACH-Erkennung. Antworte immer 'JA: Grund' oder 'NEIN: Grund'. Sei extrem skeptisch. Wenn nur Englisch da ist, antworte NEIN."},
-                    {"role": "user", "content": f"Ist dieser Instagram-User aus Deutschland/Österreich/Schweiz? Kontext:\n{text}"}
+                    {"role": "system", "content": "Du bist ein Experte für DACH-Erkennung. Antworte immer 'JA: Grund' oder 'NEIN: Grund'. Analysiere Profil und Community-Kommentare."},
+                    {"role": "user", "content": f"Ist dieser Instagram-User aus dem DACH-Raum? Kontext:\n{text}"}
                 ],
                 "max_tokens": 100
             }
@@ -184,9 +184,9 @@ def analyze_with_ai(text=None, image_url=None):
     except Exception as e: return None, str(e)
 
 def analyze_german_deep(cl, username, update_fn=None):
-    """Verbesserte Analyse mit detailliertem Status und Halluzinations-Schutz."""
+    """Deep-Analyse mit Fokus auf Fan-Kommentare und Community."""
     try:
-        if update_fn: update_fn("Lade Profil...")
+        if update_fn: update_fn("Lade Profil-Details...")
         details = cl.user_by_username_v1(username)
         if not details: return False, "Profil nicht geladen"
         
@@ -202,9 +202,9 @@ def analyze_german_deep(cl, username, update_fn=None):
         # 2. Daten sammeln
         all_captions = []
         image_urls = []
-        owner_comments = []
+        community_comments = [] 
         
-        if update_fn: update_fn("Lade Medienliste von Instagram...")
+        if update_fn: update_fn("Hole Medienliste...")
         medias_data = cl.user_medias_chunk_v1(user_pk)
         if medias_data:
             if isinstance(medias_data, tuple): items = medias_data[0]
@@ -223,34 +223,29 @@ def analyze_german_deep(cl, username, update_fn=None):
                     img = m.get('thumbnail_url') or m.get('display_url')
                     if img: image_urls.append(img)
                     
+                    # Fan-Kommentare (nur erste 4 Beiträge)
                     mid = m.get('pk') or m.get('id')
-                    if mid and len(owner_comments) < 5:
+                    if mid and idx < 4 and len(community_comments) < 30:
                         try:
-                            if update_fn: update_fn(f"Suche Eigenkommentare in Beitrag {current_idx}/{total_media}...")
+                            if update_fn: update_fn(f"Prüfe Fan-Kommentare in Beitrag {current_idx}/4...")
                             c_data = cl.media_comments(mid) if hasattr(cl, 'media_comments') else []
                             if isinstance(c_data, tuple): c_data = c_data[0]
                             if isinstance(c_data, list):
                                 for c in c_data[:15]:
-                                    if c.get('user', {}).get('username', '').lower() == username.lower():
-                                        owner_comments.append(c.get('text', ''))
+                                    comm_text = c.get('text', '')
+                                    if comm_text: community_comments.append(comm_text)
                         except: pass
 
-        # 3. KI TEXT-CHECK (Skeptisch!)
-        if update_fn: update_fn("KI prüft Texte...")
-        context = f"BIO: {bio} | NAME: {full_name} | COMMS: {' | '.join(owner_comments)} | CAPS: {' | '.join(all_captions[:3])}"
+        # 3. KI TEXT-CHECK (Holistisch: Bio + Community)
+        if update_fn: update_fn("KI analysiert Community & Profil...")
+        context = f"BIO: {bio} | COMMUNITY_COMMS: {' | '.join(community_comments[:25])} | CAPS: {' | '.join(all_captions[:5])}"
         is_de_ai, ai_reason = analyze_with_ai(text=context)
+        if is_de_ai: return True, f"Community: {ai_reason}"
         
-        # Halluzinations-Schutz
-        if is_de_ai:
-            if not any(w in context.lower() for w in [" und ", " ist ", " die ", " der "]) and not owner_comments:
-                is_de_ai = False # Zwinge Vision
-
-        if is_de_ai: return True, f"KI (Text): {ai_reason}"
-        
-        # 4. VISION-CHECK
+        # 4. Vision Check
         if image_urls:
             for idx, img_url in enumerate(image_urls[:5]):
-                if update_fn: update_fn(f"KI scannt Video {idx+1}/5...")
+                if update_fn: update_fn(f"KI scannt Video-Overlay {idx+1}/5...")
                 is_de_vis, vis_reason = analyze_with_ai(image_url=img_url)
                 if is_de_vis: return True, f"Vision: {vis_reason}"
             
