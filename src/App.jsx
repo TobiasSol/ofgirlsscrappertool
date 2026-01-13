@@ -10,9 +10,8 @@ const API_URL = "/api";
 const formatDate = (isoString) => {
   if (!isoString) return "-";
   try {
-    return new Date(isoString).toLocaleDateString('de-DE', {
-      day: '2-digit', month: '2-digit', year: 'numeric'
-    });
+    const d = new Date(isoString);
+    return d.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' });
   } catch (e) { return isoString; }
 };
 
@@ -31,7 +30,6 @@ const TabButton = ({ active, label, count, onClick, color = "purple", icon }) =>
     );
 };
 
-// --- PRELOADER COMPONENT ---
 const Preloader = () => (
     <div className="fixed inset-0 bg-white z-[100] flex flex-col items-center justify-center animate-out fade-out duration-500 fill-mode-forwards" style={{animationDelay: '1.5s', pointerEvents: 'none'}}>
         <div className="relative mb-4">
@@ -45,145 +43,67 @@ const Preloader = () => (
 );
 
 export default function App() {
-  // FIX: Prüfe beim Start, ob wir schon eingeloggt waren (localStorage)
-  const [isAuthenticated, setIsAuthenticated] = useState(() => {
-      return localStorage.getItem('insta_auth') === 'true';
-  });
+  const [isAuthenticated, setIsAuthenticated] = useState(() => localStorage.getItem('insta_auth') === 'true');
   const [password, setPassword] = useState("");
   const [loginError, setLoginError] = useState(false);
   const [appReady, setAppReady] = useState(false); 
   
-  // Auth Check beim Start
   useEffect(() => {
       const loggedIn = localStorage.getItem('isLoggedIn') === 'true';
-      if (loggedIn) {
-          setIsAuthenticated(true);
-      }
-      // App ist "bereit" (Preloader weg), sobald wir wissen, ob eingeloggt oder nicht
-      // Aber wir wollen Preloader nur zeigen, wenn wir daten laden?
-      // Ne, Preloader weg, sobald wir wissen was Phase ist.
-      // Wenn eingeloggt -> loadData kümmert sich um Preloader-Ende.
-      // Wenn NICHT eingeloggt -> sofort Preloader weg.
-      if (!loggedIn) {
-          setAppReady(true);
-      }
+      if (loggedIn) setIsAuthenticated(true);
+      setAppReady(true);
   }, []);
   
-  // Data
   const [users, setUsers] = useState([]);
   const [targets, setTargets] = useState([]);
   const [loading, setLoading] = useState(false);
   
-  // UI State
   const [activeTab, setActiveTab] = useState('unfiltered'); 
   const [filterText, setFilterText] = useState('');
   const [newTarget, setNewTarget] = useState("");
-  const [manualUsername, setManualUsername] = useState(""); // NEU: Eigenes Feld fuer Manuell
+  const [manualUsername, setManualUsername] = useState(""); 
   const [selectedUsers, setSelectedUsers] = useState([]); 
+  const [dachFilter, setDachFilter] = useState('all');
   
-  // Sorting
+  const [pageSize, setPageSize] = useState(20); 
+  const [currentPage, setCurrentPage] = useState(1);
   const [sortConfig, setSortConfig] = useState({ key: 'foundDate', direction: 'desc' });
   const [hideEnglishInEmail, setHideEnglishInEmail] = useState(false);
-  
-  // Progress State
   const [activeJob, setActiveJob] = useState(null);
   const [copySuccess, setCopySuccess] = useState(false);
-  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-
-  // --- COLUMN RESIZING ---
-  const defaultWidths = {
-      select: 50,
-      user: 250,
-      actions: 180,
-      bio: 350,
-      follower: 120,
-      date: 120
-  };
 
   const [colWidths, setColWidths] = useState(() => {
       const saved = localStorage.getItem('instaMonitor_colWidths');
-      return saved ? JSON.parse(saved) : defaultWidths;
+      return saved ? JSON.parse(saved) : { select: 40, user: 280, actions: 160, bio: 400, follower: 120, date: 100 };
   });
 
-  const resizingRef = useRef(null);
-
   const startResize = (e, key) => {
-      e.preventDefault();
-      resizingRef.current = { key, startX: e.clientX, startWidth: colWidths[key] };
-      document.addEventListener('mousemove', handleResizeMove);
-      document.addEventListener('mouseup', handleResizeEnd);
+      const startX = e.clientX;
+      const startWidth = colWidths[key];
+      const onMouseMove = (moveE) => {
+          setColWidths(prev => ({ ...prev, [key]: Math.max(50, startWidth + (moveE.clientX - startX)) }));
+      };
+      const onMouseUp = () => {
+          document.removeEventListener('mousemove', onMouseMove);
+          document.removeEventListener('mouseup', onMouseUp);
+      };
+      document.addEventListener('mousemove', onMouseMove);
+      document.addEventListener('mouseup', onMouseUp);
   };
 
-  const handleResizeMove = (e) => {
-      if (!resizingRef.current) return;
-      const { key, startX, startWidth } = resizingRef.current;
-      const diff = e.clientX - startX;
-      setColWidths(prev => ({ ...prev, [key]: Math.max(50, startWidth + diff) }));
-  };
+  useEffect(() => { localStorage.setItem('instaMonitor_colWidths', JSON.stringify(colWidths)); }, [colWidths]);
 
-  const handleResizeEnd = () => {
-      resizingRef.current = null;
-      document.removeEventListener('mousemove', handleResizeMove);
-      document.removeEventListener('mouseup', handleResizeEnd);
-  };
-
-  useEffect(() => {
-      localStorage.setItem('instaMonitor_colWidths', JSON.stringify(colWidths));
-  }, [colWidths]);
-
-
-  // --- STATS ---
-  const stats = useMemo(() => {
-    return {
-        total: users.length,
+  const stats = useMemo(() => ({
+    total: users.length,
     unfiltered: users.filter(u => ['new', 'active', 'changed', 'contacted', 'not_found'].includes(u.status)).length,
     favorites: users.filter(u => u.status === 'favorite').length,
     dach: users.filter(u => u.isGerman).length,
     eng: users.filter(u => u.status === 'eng').length,
-        hidden: users.filter(u => u.status === 'hidden').length,
-        blocked: users.filter(u => u.status === 'blocked').length,
-        email: users.filter(u => u.email).length
-    };
-  }, [users]);
+    hidden: users.filter(u => u.status === 'hidden').length,
+    blocked: users.filter(u => u.status === 'blocked').length,
+    email: users.filter(u => u.email).length
+  }), [users]);
 
-  // --- LOGIN LOGIC ---
-  const handleLogin = async (e) => {
-    e.preventDefault();
-    setLoginError(false);
-    try {
-      const res = await fetch(`${API_URL}/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password })
-      });
-      const data = await res.json();
-      if (data.success) {
-        setIsAuthenticated(true);
-        localStorage.setItem('insta_auth', 'true'); // Session speichern
-        loadData();
-      } else {
-        setLoginError(true);
-      }
-    } catch (err) {
-      console.error(err);
-      // Fallback für Local Dev ohne Backend
-      if(password === "Tobideno85!") {
-          setIsAuthenticated(true);
-          localStorage.setItem('insta_auth', 'true');
-      } else {
-          setLoginError(true);
-      }
-    }
-  };
-
-  const handleLogout = () => {
-      setIsAuthenticated(false);
-      localStorage.removeItem('insta_auth');
-      localStorage.removeItem('isLoggedIn');
-      setPassword("");
-  };
-
-  // --- DATA LOADING ---
   const loadData = async () => {
     setLoading(true);
     try {
@@ -195,18 +115,8 @@ export default function App() {
     setLoading(false);
   };
 
-  // Preloader Logic
-  useEffect(() => { 
-      if (isAuthenticated) {
-          loadData().then(() => {
-              setTimeout(() => setAppReady(true), 1500); 
-          });
-      } else {
-          setAppReady(true);
-      }
-  }, [isAuthenticated]);
+  useEffect(() => { if (isAuthenticated) loadData(); }, [isAuthenticated]);
 
-  // --- POLLING ---
   useEffect(() => {
     let interval;
     if (activeJob && !['finished', 'error'].includes(activeJob.status)) {
@@ -216,10 +126,7 @@ export default function App() {
           const data = await res.json();
           if (data.status) {
             setActiveJob(prev => ({ ...prev, ...data }));
-            if (['finished', 'error'].includes(data.status)) {
-               loadData(); 
-               setTimeout(() => setActiveJob(null), 5000); 
-            }
+            if (['finished', 'error'].includes(data.status)) loadData();
           }
         } catch (e) {}
       }, 1000);
@@ -227,227 +134,48 @@ export default function App() {
     return () => clearInterval(interval);
   }, [activeJob]);
 
-  // --- ACTIONS ---
-  const handleAddTarget = async () => {
-    if (!newTarget) return;
-    setActiveJob({ username: newTarget, status: 'starting', found: 0, message: 'Startet...' });
-    await fetch(`${API_URL}/add-target`, {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ username: newTarget })
-    });
-    setNewTarget("");
-  };
-
-  const handleSyncSelected = async () => {
-    if (selectedUsers.length === 0) return alert("Bitte User auswählen!");
-    const usernames = users.filter(u => selectedUsers.includes(u.pk)).map(u => u.username);
-    setLoading(true);
-    try {
-        const res = await fetch(`${API_URL}/sync-users`, {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ usernames })
-        });
-        const data = await res.json();
-        if (data.success) {
-            if(data.job_id) {
-                setActiveJob({ username: data.job_id, status: 'running', found: 0, message: 'Startet...' });
-                setSelectedUsers([]);
-            } else {
-                await loadData();
-                alert(`Sync fertig: ${data.message}`);
-                setSelectedUsers([]);
-            }
-        }
-    } catch (e) { alert("Fehler beim Sync."); } 
-    finally { setLoading(false); }
-  };
-
-  const handleDachScan = async () => {
-    let usersToScan = [];
-    if (selectedUsers.length > 0) {
-        usersToScan = users.filter(u => selectedUsers.includes(u.pk));
-    } else {
-        usersToScan = processedUsers; 
-    }
-    if (usersToScan.length === 0) return alert("Keine User zum Scannen.");
-    
-    const usernames = usersToScan.map(u => u.username);
-    setLoading(true);
-    try {
-        const res = await fetch(`${API_URL}/analyze-german`, {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ usernames })
-        });
-        const data = await res.json();
-        if (data.success && data.job_id) {
-             setActiveJob({ username: data.job_id, status: 'running', found: 0, message: 'Startet DACH-Scan...' });
-             if (selectedUsers.length > 0) setSelectedUsers([]);
-        } else {
-            alert("Fehler beim Starten.");
-        }
-    } catch (e) {
-        alert("Fehler: " + e);
-    } finally {
-        setLoading(false);
-    }
-  };
-
-  const handleDeleteSelected = async () => {
-    if (selectedUsers.length === 0) return;
-    if (!window.confirm(`Wirklich ${selectedUsers.length} User endgültig löschen?`)) return;
-    await fetch(`${API_URL}/delete-users`, {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ pks: selectedUsers })
-    });
-    setSelectedUsers([]);
-    loadData();
-  };
-
-  const handleMarkExported = async (usernames) => {
-    await fetch(`${API_URL}/mark-exported`, {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ usernames })
-    });
-    loadData(); 
-  };
-
-  const handleDownloadBackup = () => {
-      window.location.href = `${API_URL}/export`;
-  };
-
-  const handleImportBackup = async (event) => {
-      const file = event.target.files[0];
-      if (!file) return;
-      
-      const formData = new FormData();
-      formData.append('file', file);
-      
-      setLoading(true);
-      try {
-          const res = await fetch(`${API_URL}/import`, {
-              method: 'POST',
-              body: formData
-          });
-          const data = await res.json();
-          if (data.success) {
-              alert(`Import erfolgreich: ${data.added} neu, ${data.updated} aktualisiert.`);
-              loadData();
-          } else {
-              alert(`Fehler: ${data.error}`);
-          }
-      } catch (e) {
-          alert("Upload fehlgeschlagen.");
-      } finally {
-          setLoading(false);
-          event.target.value = null; // Reset input
-      }
-  };
-
-  const handleManualAdd = async (username) => {
-    if (!username) return;
-    setLoading(true); 
-    try {
-        const res = await fetch(`${API_URL}/add-lead`, {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ username })
-        });
-        const data = await res.json();
-        if (data.success) {
-            alert(`Erfolg: ${data.message}`);
-            setManualUsername(""); // Feld leeren
-            loadData(); 
-        } else {
-            alert(`Fehler: ${data.error || "Unbekannt"}`);
-        }
-    } catch (e) { alert("Verbindungsfehler."); } 
-    finally { setLoading(false); }
-  };
-
-  const handleStatusChange = async (pk, newStatus) => {
-    setUsers(users.map(u => u.pk === pk ? {...u, status: newStatus} : u));
-    await fetch(`${API_URL}/lead/update-status`, {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ pk, status: newStatus })
-    });
-  };
-
-  const handleGoToExport = () => {
-    setActiveTab('export');
-  };
-
-  // --- SORTING ---
-  const requestSort = (key) => {
-    let direction = 'asc';
-    if (sortConfig.key === key && sortConfig.direction === 'asc') direction = 'desc';
-    setSortConfig({ key, direction });
-  };
-
-  // --- FILTERED DATA ---
   const processedUsers = useMemo(() => {
-    let filtered = users;
-
+    let filtered = [...users];
     switch (activeTab) {
         case 'review': 
-        case 'unfiltered':
-            filtered = filtered.filter(u => ['new', 'active', 'changed', 'contacted', 'not_found'].includes(u.status));
-            break;
-        case 'dach':
-            filtered = filtered.filter(u => u.isGerman);
-            break;
+        case 'unfiltered': filtered = filtered.filter(u => ['new', 'active', 'changed', 'contacted', 'not_found'].includes(u.status)); break;
+        case 'dach': filtered = filtered.filter(u => u.isGerman); break;
         case 'favorites': filtered = filtered.filter(u => u.status === 'favorite'); break;
         case 'eng': filtered = filtered.filter(u => u.status === 'eng'); break;
         case 'hidden': filtered = filtered.filter(u => u.status === 'hidden'); break;
         case 'blocked': filtered = filtered.filter(u => u.status === 'blocked'); break;
         case 'email': 
             filtered = filtered.filter(u => u.email && u.status !== 'blocked' && u.status !== 'hidden'); 
-            if (hideEnglishInEmail) {
-                // HIER IST DER FIX: Filtere alle User raus, deren Status 'eng' ist.
-                // Das wurde vorher nicht korrekt angewendet oder ueberschrieben.
-                filtered = filtered.filter(u => u.status !== 'eng');
-            }
+            if (hideEnglishInEmail) filtered = filtered.filter(u => u.status !== 'eng');
             break;
-        case 'export':
-            if (selectedUsers.length > 0) filtered = filtered.filter(u => selectedUsers.includes(u.pk));
-            else filtered = []; 
-            break;
+        case 'export': filtered = selectedUsers.length > 0 ? filtered.filter(u => selectedUsers.includes(u.pk)) : []; break;
     }
-
+    if (activeTab === 'unfiltered') {
+        if (dachFilter === 'de') filtered = filtered.filter(u => u.isGerman == true);
+        else if (dachFilter === 'no_de') filtered = filtered.filter(u => u.isGerman == false && u.isGerman !== null);
+        else if (dachFilter === 'unscanned') filtered = filtered.filter(u => u.isGerman === null);
+    }
     if (filterText) {
-        const lower = filterText.toLowerCase();
-        filtered = filtered.filter(u => 
-            (u.username||'').toLowerCase().includes(lower) || 
-            (u.bio||'').toLowerCase().includes(lower) ||
-            (u.fullName||'').toLowerCase().includes(lower)
-        );
+        const l = filterText.toLowerCase();
+        filtered = filtered.filter(u => (u.username||'').toLowerCase().includes(l) || (u.bio||'').toLowerCase().includes(l));
     }
-
-    return [...filtered].sort((a, b) => {
-        if (activeTab === 'unfiltered' && sortConfig.key === 'foundDate') {
-            if (a.isGerman && !b.isGerman) return -1;
-            if (!a.isGerman && b.isGerman) return 1;
-        }
-        let aVal = a[sortConfig.key];
-        let bVal = b[sortConfig.key];
-        if (aVal == null) aVal = ""; if (bVal == null) bVal = "";
-        if (typeof aVal === 'string') aVal = aVal.toLowerCase();
-        if (typeof bVal === 'string') bVal = bVal.toLowerCase();
-        if (aVal < bVal) return sortConfig.direction === 'asc' ? -1 : 1;
-        if (aVal > bVal) return sortConfig.direction === 'asc' ? 1 : -1;
-        return 0;
+    return filtered.sort((a, b) => {
+        if (activeTab === 'unfiltered' && sortConfig.key === 'foundDate' && a.isGerman !== b.isGerman) return a.isGerman ? -1 : 1;
+        let aV = a[sortConfig.key] || ""; let bV = b[sortConfig.key] || "";
+        if (typeof aV === 'string') { aV = aV.toLowerCase(); bV = bV.toLowerCase(); }
+        return aV < bV ? (sortConfig.direction === 'asc' ? -1 : 1) : (sortConfig.direction === 'asc' ? 1 : -1);
     });
-  }, [users, activeTab, filterText, sortConfig, selectedUsers]);
+  }, [users, activeTab, filterText, sortConfig, selectedUsers, dachFilter, hideEnglishInEmail]);
 
-  // --- SELECTION ---
+  const paginatedUsers = useMemo(() => processedUsers.slice((currentPage - 1) * pageSize, currentPage * pageSize), [processedUsers, currentPage, pageSize]);
+  const totalPages = Math.ceil(processedUsers.length / pageSize);
+  useEffect(() => { setCurrentPage(1); }, [activeTab, filterText, dachFilter, pageSize]);
+
   const toggleSelectAll = () => {
-    if (selectedUsers.length === processedUsers.length) setSelectedUsers([]);
-    else setSelectedUsers(processedUsers.map(u => u.pk));
+    const allOnPageSelected = paginatedUsers.every(u => selectedUsers.includes(u.pk));
+    const pagePks = paginatedUsers.map(u => u.pk);
+    if (allOnPageSelected) setSelectedUsers(prev => prev.filter(pk => !pagePks.includes(pk)));
+    else setSelectedUsers(prev => [...new Set([...prev, ...pagePks])]);
   };
 
   const toggleSelectUser = (pk) => {
@@ -455,120 +183,92 @@ export default function App() {
     else setSelectedUsers([...selectedUsers, pk]);
   };
 
-  // --- SHORTCUTS ---
-  useEffect(() => {
-    if (activeTab !== 'review' || processedUsers.length === 0) return;
-    const handleKeyDown = (e) => {
-        const currentUser = processedUsers[0];
-        if (!currentUser) return;
-        if (e.key === 'ArrowRight') handleStatusChange(currentUser.pk, 'favorite');
-        if (e.key === 'ArrowLeft') handleStatusChange(currentUser.pk, 'blocked');
-        if (e.key === 'ArrowDown') handleStatusChange(currentUser.pk, 'hidden');
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [activeTab, processedUsers]);
+  const handleStatusChange = async (pk, newStatus) => {
+    setUsers(prev => prev.map(u => u.pk === pk ? {...u, status: newStatus} : u));
+    await fetch(`${API_URL}/lead/update-status`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ pk, status: newStatus })});
+  };
+
+  const requestSort = (key) => {
+    let direction = 'asc';
+    if (sortConfig.key === key && sortConfig.direction === 'asc') direction = 'desc';
+    setSortConfig({ key, direction });
+  };
 
   const ResizeHandle = ({ id }) => (
-      <div 
-        className="absolute right-0 top-0 bottom-0 w-2 cursor-col-resize hover:bg-purple-400 group flex items-center justify-center z-10 opacity-0 hover:opacity-100"
-        onMouseDown={(e) => startResize(e, id)}
-      >
-          <div className="w-[1px] h-full bg-purple-500"></div>
-      </div>
+    <div className="absolute right-0 top-0 bottom-0 w-2 cursor-col-resize hover:bg-purple-400 z-10 opacity-0 hover:opacity-100" onMouseDown={(e) => startResize(e, id)}>
+        <div className="w-[1px] h-full bg-purple-500 mx-auto"></div>
+    </div>
   );
 
-  // --- LOGIN SCREEN ---
-  if (!isAuthenticated) {
-    return (
-      <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
-        <div className="bg-white p-8 rounded-2xl shadow-2xl w-full max-w-md animate-in fade-in zoom-in duration-300">
-          <div className="flex justify-center mb-6">
-            <div className="bg-purple-600 p-4 rounded-full text-white shadow-lg shadow-purple-500/30">
-              <Lock size={32} />
-            </div>
-          </div>
-          <h2 className="text-2xl font-bold text-center mb-2 text-slate-800">InstaMonitor Pro</h2>
-          <p className="text-center text-slate-500 mb-6 text-sm">Bitte authentifizieren</p>
-          
-          <form onSubmit={handleLogin} className="space-y-4">
-            <div>
-                <input 
-                  type="password" 
-                  className={`w-full px-4 py-3 border rounded-lg focus:ring-2 outline-none transition-all ${loginError ? 'border-red-500 focus:ring-red-200' : 'border-slate-300 focus:ring-purple-200 focus:border-purple-500'}`}
-                  placeholder="Passwort eingeben..."
-                  value={password}
-                  onChange={e => {setPassword(e.target.value); setLoginError(false);}}
-                  autoFocus
-                />
-                {loginError && <p className="text-red-500 text-xs mt-1 ml-1 flex items-center gap-1"><AlertCircle size={10}/> Falsches Passwort</p>}
-            </div>
-            <button className="w-full bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white font-bold py-3 rounded-lg transition-all shadow-md transform hover:scale-[1.02] active:scale-[0.98]">
-              Zugriff anfordern
-            </button>
-          </form>
-          <div className="mt-6 text-center text-slate-300 text-xs">
-              Protected System • v2.0
-          </div>
-        </div>
+  const handleAddTarget = async () => {
+    if (!newTarget) return;
+    setActiveJob({ username: newTarget, status: 'running', message: 'Startet...' });
+    await fetch(`${API_URL}/add-target`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ username: newTarget })});
+    setNewTarget("");
+  };
+
+  const handleManualAdd = async () => {
+    if (!manualUsername) return;
+    setLoading(true); 
+    await fetch(`${API_URL}/add-lead`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ username: manualUsername })});
+    setManualUsername("");
+    loadData();
+  };
+
+  const handleDachScan = async () => {
+    const usersToScan = selectedUsers.length > 0 ? users.filter(u => selectedUsers.includes(u.pk)) : processedUsers;
+    if (usersToScan.length === 0) return;
+    const usernames = usersToScan.map(u => u.username);
+    setLoading(true);
+    const res = await fetch(`${API_URL}/analyze-german`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ usernames })});
+    const data = await res.json();
+    if (data.job_id) setActiveJob({ username: data.job_id, status: 'running', message: 'Scan läuft...' });
+    setLoading(false);
+  };
+
+  const handleDeleteSelected = async () => {
+    if (selectedUsers.length === 0 || !window.confirm('Löschen?')) return;
+    await fetch(`${API_URL}/delete-users`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ pks: selectedUsers })});
+    setSelectedUsers([]);
+    loadData();
+  };
+
+  if (!isAuthenticated) return (
+    <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
+      <div className="bg-white p-8 rounded-2xl shadow-2xl w-full max-w-md">
+        <h2 className="text-2xl font-bold text-center mb-6">InstaMonitor Pro Login</h2>
+        <form onSubmit={(e) => { e.preventDefault(); if(password === "Tobideno85!") { setIsAuthenticated(true); localStorage.setItem('insta_auth', 'true'); loadData(); } else setLoginError(true); }} className="space-y-4">
+          <input type="password" title="Passwort" className="w-full px-4 py-3 border rounded-lg" placeholder="Passwort" value={password} onChange={e => setPassword(e.target.value)} autoFocus />
+          {loginError && <p className="text-red-500 text-xs text-center mt-2 font-bold">Falsches Passwort</p>}
+          <button className="w-full bg-purple-600 text-white font-bold py-3 rounded-lg hover:bg-purple-700 transition-all">Login</button>
+        </form>
       </div>
-    );
-  }
+    </div>
+  );
 
-  // --- RENDER ---
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-800 font-sans" style={{ cursor: resizingRef.current ? 'col-resize' : 'auto' }}>
-      
+    <div className="min-h-screen bg-slate-50 text-slate-800 font-sans">
       {!appReady && <Preloader />}
-
-      {/* GLOBAL LOADING OVERLAY */}
+      
       {activeJob && !['finished', 'error'].includes(activeJob.status) && (
-          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[100] flex flex-col items-center justify-center p-6 text-center animate-in fade-in duration-300">
-              <div className="bg-white p-8 rounded-3xl shadow-2xl max-w-sm w-full space-y-6">
-                  <div className="relative mx-auto w-20 h-20">
-                      <div className="absolute inset-0 border-4 border-purple-100 rounded-full"></div>
-                      <div className="absolute inset-0 border-4 border-purple-600 rounded-full border-t-transparent animate-spin"></div>
-                      <Instagram className="absolute inset-0 m-auto text-purple-600 animate-pulse" size={32} />
-                  </div>
-                  
-                  <div className="space-y-2">
-                      <h2 className="text-xl font-bold text-slate-800">Analyse läuft...</h2>
-                      <p className="text-slate-500 font-medium">{activeJob.message || "Bitte warten"}</p>
-                  </div>
-
-                  {activeJob.total > 0 && (
-                      <div className="space-y-2">
-                          <div className="flex justify-between text-xs font-bold text-slate-400">
-                              <span>Fortschritt</span>
-                              <span>{Math.round((activeJob.found / activeJob.total) * 100)}%</span>
-                          </div>
-                          <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden">
-                              <div 
-                                  className="bg-purple-600 h-full transition-all duration-500" 
-                                  style={{ width: `${(activeJob.found / activeJob.total) * 100}%` }}
-                              ></div>
-                          </div>
-                          <p className="text-[10px] text-slate-400 uppercase tracking-widest">{activeJob.found} von {activeJob.total} Usern</p>
-                      </div>
-                  )}
+          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[100] flex items-center justify-center p-6 text-center animate-in fade-in duration-300">
+              <div className="bg-white p-8 rounded-xl shadow-2xl max-w-sm w-full space-y-4">
+                  <Loader2 className="mx-auto animate-spin text-purple-600" size={40} />
+                  <h2 className="text-xl font-bold">Analyse läuft...</h2>
+                  <p className="text-slate-500 text-sm font-medium">{activeJob.message}</p>
               </div>
           </div>
       )}
 
-      {/* HEADER */}
-      <nav className="bg-white border-b border-slate-200 sticky top-0 z-30 px-4 md:px-6 py-4 flex items-center justify-between shadow-sm gap-4">
+      <nav className="bg-white border-b border-slate-200 sticky top-0 z-30 px-4 md:px-6 py-4 flex flex-col xl:flex-row items-center justify-between shadow-sm gap-4">
         <div className="flex items-center gap-2">
-          <button className="md:hidden p-2 -ml-2 text-slate-600" onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}>
-              <Menu size={24}/>
-          </button>
-          <Instagram className="text-purple-600 hidden md:block" size={28} />
-          <h1 className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-purple-600 to-pink-600 truncate">InstaMonitor</h1>
+          <Instagram className="text-purple-600" size={28} />
+          <h1 className="text-xl font-bold">InstaMonitor</h1>
         </div>
         
-        {/* DESKTOP TAB BAR */}
-        <div className="hidden md:flex gap-2 bg-slate-50 p-1.5 rounded-xl border border-slate-200">
+        <div className="flex flex-wrap justify-center gap-2">
             <TabButton active={activeTab === 'review'} onClick={() => setActiveTab('review')} label="Review" color="pink" icon={<Play size={16}/>} />
-            <div className="w-[1px] bg-slate-300 mx-1 flex-shrink-0"></div>
+            <div className="w-[1px] bg-slate-300 mx-1"></div>
             <TabButton active={activeTab === 'unfiltered'} onClick={() => setActiveTab('unfiltered')} label="Ungefiltert" count={stats.unfiltered} color="purple"/>
             <TabButton active={activeTab === 'dach'} onClick={() => setActiveTab('dach')} label="DACH" count={stats.dach} color="orange" icon={<Globe size={16}/>}/>
             <TabButton active={activeTab === 'favorites'} onClick={() => setActiveTab('favorites')} label="Favoriten" count={stats.favorites} color="yellow"/>
@@ -581,467 +281,146 @@ export default function App() {
         </div>
 
         <div className="flex items-center gap-2">
-           <div className="hidden md:flex bg-slate-100 rounded-lg p-1">
+           <div className="flex bg-slate-100 rounded-lg p-1">
              <input type="text" placeholder="Ziel..." className="bg-transparent px-3 py-1 outline-none text-sm w-32" value={newTarget} onChange={e => setNewTarget(e.target.value)} />
              <button onClick={handleAddTarget} className="bg-black text-white p-1.5 rounded-md hover:bg-slate-800"><Plus size={16} /></button>
            </div>
-           <button onClick={loadData} className="p-2 hover:bg-slate-100 rounded-full relative z-50" title="Reload"><RefreshCw size={18} /></button>
-           <button 
-                onClick={handleLogout} 
-                className="bg-red-50 hover:bg-red-100 text-red-600 p-2 rounded-full cursor-pointer relative z-50 transition-colors hidden md:block" 
-                title="Ausloggen"
-           >
-               <LogOut size={18}/>
-           </button>
+           <button onClick={loadData} className="p-2 hover:bg-slate-100 rounded-full transition-colors"><RefreshCw size={18} /></button>
+           <button onClick={() => { setIsAuthenticated(false); localStorage.removeItem('insta_auth'); }} className="p-2 text-red-600 hover:bg-red-50 rounded-full transition-colors"><LogOut size={18}/></button>
         </div>
       </nav>
 
-      {/* MOBILE DRAWER */}
-      {isMobileMenuOpen && (
-          <div className="fixed inset-0 z-50 md:hidden">
-              <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setIsMobileMenuOpen(false)}></div>
-              <div className="absolute left-0 top-0 bottom-0 w-3/4 max-w-xs bg-white shadow-2xl p-6 flex flex-col animate-in slide-in-from-left duration-200">
-                  <div className="flex items-center gap-2 mb-8">
-                      <Instagram className="text-purple-600" size={28} />
-                      <h1 className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-purple-600 to-pink-600">InstaMonitor</h1>
-                  </div>
-                  
-                  <div className="space-y-2 flex-1 overflow-y-auto">
-                      <button onClick={() => {setActiveTab('review'); setIsMobileMenuOpen(false)}} className={`w-full text-left px-4 py-3 rounded-xl font-bold flex items-center gap-3 ${activeTab === 'review' ? 'bg-pink-50 text-pink-600' : 'text-slate-600 hover:bg-slate-50'}`}>
-                          <Play size={20}/> Review Mode
-                      </button>
-                      <div className="h-[1px] bg-slate-100 my-2"></div>
-                      
-                      <button onClick={() => {setActiveTab('unfiltered'); setIsMobileMenuOpen(false)}} className={`w-full text-left px-4 py-3 rounded-xl font-bold flex items-center justify-between ${activeTab === 'unfiltered' ? 'bg-purple-50 text-purple-600' : 'text-slate-600 hover:bg-slate-50'}`}>
-                          <span>Ungefiltert</span> <span className="bg-slate-100 px-2 py-0.5 rounded-full text-xs text-slate-500">{stats.unfiltered}</span>
-                      </button>
-                      <button onClick={() => {setActiveTab('favorites'); setIsMobileMenuOpen(false)}} className={`w-full text-left px-4 py-3 rounded-xl font-bold flex items-center justify-between ${activeTab === 'favorites' ? 'bg-yellow-50 text-yellow-600' : 'text-slate-600 hover:bg-slate-50'}`}>
-                          <span>Favoriten</span> <span className="bg-slate-100 px-2 py-0.5 rounded-full text-xs text-slate-500">{stats.favorites}</span>
-                      </button>
-                      <button onClick={() => {setActiveTab('eng'); setIsMobileMenuOpen(false)}} className={`w-full text-left px-4 py-3 rounded-xl font-bold flex items-center justify-between ${activeTab === 'eng' ? 'bg-orange-50 text-orange-600' : 'text-slate-600 hover:bg-slate-50'}`}>
-                          <span>English</span> <span className="bg-slate-100 px-2 py-0.5 rounded-full text-xs text-slate-500">{stats.eng}</span>
-                      </button>
-                      <button onClick={() => {setActiveTab('email'); setIsMobileMenuOpen(false)}} className={`w-full text-left px-4 py-3 rounded-xl font-bold flex items-center justify-between ${activeTab === 'email' ? 'bg-blue-50 text-blue-600' : 'text-slate-600 hover:bg-slate-50'}`}>
-                          <span>Email</span> <span className="bg-slate-100 px-2 py-0.5 rounded-full text-xs text-slate-500">{stats.email}</span>
-                      </button>
-                      <button onClick={() => {setActiveTab('hidden'); setIsMobileMenuOpen(false)}} className={`w-full text-left px-4 py-3 rounded-xl font-bold flex items-center justify-between ${activeTab === 'hidden' ? 'bg-slate-100 text-slate-700' : 'text-slate-600 hover:bg-slate-50'}`}>
-                          <span>Versteckt</span> <span className="bg-slate-100 px-2 py-0.5 rounded-full text-xs text-slate-500">{stats.hidden}</span>
-                      </button>
-                      <button onClick={() => {setActiveTab('blocked'); setIsMobileMenuOpen(false)}} className={`w-full text-left px-4 py-3 rounded-xl font-bold flex items-center justify-between ${activeTab === 'blocked' ? 'bg-red-50 text-red-600' : 'text-slate-600 hover:bg-slate-50'}`}>
-                          <span>Blockiert</span> <span className="bg-slate-100 px-2 py-0.5 rounded-full text-xs text-slate-500">{stats.blocked}</span>
-                      </button>
-                      
-                      <div className="h-[1px] bg-slate-100 my-2"></div>
-                      
-                      <button onClick={() => {setActiveTab('export'); setIsMobileMenuOpen(false)}} className={`w-full text-left px-4 py-3 rounded-xl font-bold flex items-center gap-3 ${activeTab === 'export' ? 'bg-green-50 text-green-600' : 'text-slate-600 hover:bg-slate-50'}`}>
-                          <Copy size={20}/> Export / Import
-                      </button>
-                      <button onClick={() => {setActiveTab('add'); setIsMobileMenuOpen(false)}} className={`w-full text-left px-4 py-3 rounded-xl font-bold flex items-center gap-3 ${activeTab === 'add' ? 'bg-indigo-50 text-indigo-600' : 'text-slate-600 hover:bg-slate-50'}`}>
-                          <UserPlus size={20}/> User hinzufügen
-                      </button>
-                  </div>
-
-                  <div className="pt-6 border-t border-slate-100 mt-2 space-y-4">
-                      <div className="flex bg-slate-100 rounded-lg p-1">
-                         <input type="text" placeholder="Ziel..." className="bg-transparent px-3 py-2 outline-none text-sm w-full" value={newTarget} onChange={e => setNewTarget(e.target.value)} />
-                         <button onClick={() => {handleAddTarget(); setIsMobileMenuOpen(false)}} className="bg-black text-white p-2 rounded-md hover:bg-slate-800"><Plus size={16} /></button>
-                       </div>
-                      <button onClick={handleLogout} className="w-full text-left px-4 py-3 rounded-xl font-bold flex items-center gap-3 text-red-600 hover:bg-red-50">
-                          <LogOut size={20}/> Ausloggen
-                      </button>
-                  </div>
-              </div>
-          </div>
-      )}
-
       <main className="w-full px-4 md:px-8 py-6 space-y-6">
-        
-        {/* CONTROLS - Now Sticky */}
-        {activeTab !== 'review' && (
-        <div className="sticky top-[73px] z-20 flex flex-col md:flex-row justify-between items-center bg-white/90 backdrop-blur-md p-3 rounded-xl shadow-md border border-slate-200 gap-3 mb-6">
-            <div className="flex flex-col md:flex-row items-center gap-4 w-full md:w-auto">
-                <div className="relative w-full md:w-72">
-                    <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                    <input type="text" placeholder="Suchen..." className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm outline-none focus:border-purple-500" value={filterText} onChange={(e) => setFilterText(e.target.value)} />
-                </div>
-
-                <button onClick={handleDachScan} className="bg-orange-50 text-orange-600 border border-orange-200 hover:bg-orange-100 px-3 py-2 rounded-lg text-sm font-bold flex items-center gap-2 whitespace-nowrap" title="DACH-Analyse starten">
-                    <Globe size={16}/> {selectedUsers.length > 0 ? `${selectedUsers.length} Scannen` : "Alle Scannen"}
-                </button>
-                
-                {activeTab === 'email' && (
-                    <label className="flex items-center gap-2 bg-white border border-slate-200 px-3 py-2 rounded-lg cursor-pointer hover:bg-slate-50 select-none shadow-sm transition-colors">
-                        <input 
-                            type="checkbox" 
-                            checked={hideEnglishInEmail} 
-                            onChange={(e) => setHideEnglishInEmail(e.target.checked)} 
-                            className="w-4 h-4 rounded accent-purple-600 cursor-pointer"
-                        />
-                        <span className="text-sm font-medium text-slate-600 flex items-center gap-1">
-                            <Globe size={14}/> Ohne ENG
-                        </span>
-                    </label>
-                )}
-
-                {selectedUsers.length > 0 && (
-                    <div className="flex items-center gap-2 bg-purple-50 px-3 py-1.5 rounded-lg border border-purple-100 animate-in fade-in w-full md:w-auto justify-between md:justify-start">
-                        <span className="text-purple-800 text-sm font-bold whitespace-nowrap">{selectedUsers.length} markiert</span>
-                        <div className="flex gap-1">
-                            <button onClick={handleSyncSelected} className="text-xs bg-purple-600 text-white px-2 py-1 rounded hover:bg-purple-700 flex items-center gap-1">
-                                <RefreshCw size={12}/> Sync
-                            </button>
-                            <button onClick={handleGoToExport} className="text-xs bg-green-600 text-white px-2 py-1 rounded hover:bg-green-700 flex items-center gap-1">
-                                <Copy size={12}/> Export
-                            </button>
-                            <button onClick={handleDeleteSelected} className="text-xs bg-red-600 text-white px-2 py-1 rounded hover:bg-red-700 flex items-center gap-1">
-                                <Trash2 size={12}/> Del
-                            </button>
-                        </div>
-                    </div>
-                )}
-            </div>
-            {activeJob && (
-                <div className="flex items-center gap-3 bg-blue-50 px-4 py-2 rounded-lg border border-blue-100 w-full md:w-auto">
-                    <Loader2 size={18} className="animate-spin text-blue-600"/>
-                    <span className="text-sm text-blue-800 font-medium truncate">{activeJob.username}: {activeJob.message}</span>
-                </div>
-            )}
-        </div>
-        )}
-
-        {/* --- REVIEW MODE --- */}
         {activeTab === 'add' ? (
-            <div className="flex flex-col items-center justify-center min-h-[50vh] bg-white rounded-2xl shadow-sm border border-slate-200 p-6 md:p-12">
-                <div className="bg-indigo-100 p-4 rounded-full text-indigo-600 mb-6">
-                    <UserPlus size={48} />
+            <div className="bg-white p-8 rounded-xl border border-slate-200 text-center space-y-6 animate-in fade-in zoom-in-95">
+                <h2 className="text-2xl font-bold">User manuell hinzufügen</h2>
+                <div className="flex max-w-md mx-auto gap-2">
+                    <input type="text" className="flex-1 p-2 border rounded-lg" placeholder="Username" value={manualUsername} onChange={e => setManualUsername(e.target.value)} />
+                    <button onClick={handleManualAdd} className="bg-indigo-600 text-white px-6 py-2 rounded-lg font-bold hover:bg-indigo-700">Add</button>
                 </div>
-                <h2 className="text-2xl font-bold text-slate-800 mb-2">Manuell User hinzufügen</h2>
-                <p className="text-slate-500 mb-8 text-center max-w-md">
-                    Füge hier einen Instagram-Usernamen ein (ohne @).
-                </p>
-                <div className="flex gap-2 w-full max-w-md">
-                    <input 
-                        type="text" 
-                        placeholder="Instagram Username" 
-                        className="flex-1 px-4 py-3 border border-slate-300 rounded-lg outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200"
-                        value={manualUsername}
-                        onChange={e => setManualUsername(e.target.value)}
-                        onKeyDown={e => e.key === 'Enter' && handleManualAdd(manualUsername)}
-                    />
-                    <button 
-                        onClick={() => handleManualAdd(manualUsername)} 
-                        className="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-3 rounded-lg font-bold"
-                    >
-                        {loading ? <Loader2 className="animate-spin"/> : "Add"}
-                    </button>
+            </div>
+        ) : activeTab === 'export' ? (
+            <div className="bg-white p-8 rounded-xl border border-slate-200 space-y-8 animate-in fade-in zoom-in-95">
+                <h2 className="text-2xl font-bold">Export / Backup</h2>
+                <div className="grid md:grid-cols-2 gap-8">
+                    <div className="space-y-4">
+                        <h3 className="font-bold text-slate-600">Namen kopieren</h3>
+                        <textarea readOnly className="w-full h-40 p-4 bg-slate-50 border rounded-lg font-mono text-sm" value={processedUsers.map(u => u.username).join('\n')} />
+                        <button onClick={() => { navigator.clipboard.writeText(processedUsers.map(u => u.username).join('\n')); setCopySuccess(true); setTimeout(() => setCopySuccess(false), 2000); }} className="w-full bg-slate-800 text-white py-2 rounded-lg font-bold">{copySuccess ? 'Kopiert!' : 'Kopieren'}</button>
+                    </div>
+                    <div className="space-y-4">
+                        <h3 className="font-bold text-slate-600">Datenbank Backup</h3>
+                        <button onClick={() => window.location.href = `${API_URL}/export`} className="w-full bg-blue-600 text-white py-3 rounded-lg font-bold flex items-center justify-center gap-2"><Download size={18}/> Download JSON</button>
+                        <label className="w-full border-2 border-dashed p-8 rounded-lg flex flex-col items-center gap-2 cursor-pointer hover:bg-slate-50 transition-all">
+                            <Upload size={24}/> <span>JSON wiederherstellen</span>
+                            <input type="file" accept=".json" className="hidden" onChange={async (e) => { const f = e.target.files[0]; if(!f) return; const fd = new FormData(); fd.append('file', f); await fetch(`${API_URL}/import`, {method: 'POST', body: fd}); loadData(); }} />
+                        </label>
+                    </div>
                 </div>
             </div>
         ) : activeTab === 'review' ? (
-            <div className="flex flex-col items-center justify-center min-h-[60vh]">
-                {processedUsers.length > 0 ? (
-                    <div className="bg-white rounded-2xl shadow-xl border border-slate-200 p-6 w-full max-w-lg text-center relative overflow-hidden">
-                        <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-purple-500 to-pink-500"></div>
-                        <div className="absolute top-4 right-4 bg-slate-100 text-slate-500 text-xs px-2 py-1 rounded-full">
-                            Src: {processedUsers[0].sourceAccount}
+            <div className="flex flex-col items-center justify-center min-h-[50vh] bg-white rounded-xl p-8 border animate-in fade-in">
+                {processedUsers[0] ? (
+                    <div className="text-center space-y-6 max-w-sm">
+                        <div className="w-24 h-24 rounded-full bg-slate-100 mx-auto flex items-center justify-center text-3xl font-bold">{processedUsers[0].username[0].toUpperCase()}</div>
+                        <h2 className="text-3xl font-bold">{processedUsers[0].username}</h2>
+                        <div className="flex justify-center gap-4">
+                            <button onClick={() => handleStatusChange(processedUsers[0].pk, 'favorite')} className="bg-yellow-100 text-yellow-600 p-4 rounded-2xl hover:bg-yellow-200 transition-all"><Heart size={32}/></button>
+                            <button onClick={() => handleStatusChange(processedUsers[0].pk, 'blocked')} className="bg-red-100 text-red-600 p-4 rounded-2xl hover:bg-red-200 transition-all"><Ban size={32}/></button>
                         </div>
-
-                        <div className="w-24 h-24 bg-slate-200 rounded-full mx-auto flex items-center justify-center text-3xl font-bold text-slate-400 mb-4 mt-4">
-                            {processedUsers[0].username[0].toUpperCase()}
-                        </div>
-
-                        <a 
-                            href={`https://instagram.com/${processedUsers[0].username}`} 
-                            target="_blank" 
-                            rel="noreferrer" 
-                            className="text-2xl font-bold text-slate-800 mb-1 hover:text-purple-600 hover:underline block"
-                        >
-                            {processedUsers[0].username}
-                        </a>
-                        
-                        <div className="text-slate-500 mb-4 flex flex-col items-center">
-                            <span className="text-sm">{processedUsers[0].fullName}</span>
-                            <span className="text-blue-600 font-bold mt-1 text-xs bg-blue-50 px-3 py-1 rounded-full border border-blue-100">
-                                {processedUsers[0].followersCount?.toLocaleString()} Follower
-                            </span>
-                        </div>
-
-                        {/* TOP ACTION BUTTONS */}
-                        <div className="flex justify-center gap-3 mb-6">
-                            <button onClick={() => handleStatusChange(processedUsers[0].pk, 'favorite')} className="flex flex-col items-center gap-1 p-2 rounded-xl bg-yellow-100 text-yellow-600 border border-yellow-200 hover:bg-yellow-200 w-20" title="Fav">
-                                <Heart size={24} className="fill-yellow-600"/> <span className="font-bold text-[10px]">FAV</span>
-                            </button>
-                            <button onClick={() => handleStatusChange(processedUsers[0].pk, 'eng')} className="flex flex-col items-center gap-1 p-2 rounded-xl bg-orange-50 text-orange-600 border border-orange-200 hover:bg-orange-100 w-20" title="English">
-                                <Globe size={24}/> <span className="font-bold text-[10px]">ENG</span>
-                            </button>
-                            <button onClick={() => handleStatusChange(processedUsers[0].pk, 'blocked')} className="flex flex-col items-center gap-1 p-2 rounded-xl bg-red-50 text-red-600 border border-red-200 hover:bg-red-100 w-20" title="Block">
-                                <Ban size={24}/> <span className="font-bold text-[10px]">BLOCK</span>
-                            </button>
-                            <button onClick={() => handleStatusChange(processedUsers[0].pk, 'hidden')} className="flex flex-col items-center gap-1 p-2 rounded-xl bg-slate-100 text-slate-600 border border-slate-200 hover:bg-slate-200 w-20" title="Hide">
-                                <EyeOff size={24}/> <span className="font-bold text-[10px]">HIDE</span>
-                            </button>
-                        </div>
-
-                        <div className="bg-slate-50 p-6 rounded-xl border border-slate-100 mb-6 text-center">
-                            <p className="whitespace-pre-wrap text-slate-700 italic text-sm leading-relaxed mb-4 max-h-40 overflow-y-auto">{processedUsers[0].bio || "-"}</p>
-                            
-                            {processedUsers[0].externalUrl && (
-                                <a 
-                                    href={processedUsers[0].externalUrl} 
-                                    target="_blank" 
-                                    rel="noreferrer" 
-                                    className="inline-flex items-center gap-1 text-blue-600 font-bold bg-blue-50 px-4 py-2 rounded-full text-sm hover:underline mb-2 border border-blue-100"
-                                >
-                                    <Globe size={16}/> Link öffnen: <span className="underline">{processedUsers[0].externalUrl.replace(/^https?:\/\//, '')}</span>
-                                </a>
-                            )}
-                            
-                            <div className="flex justify-center mt-4">
-                                <a href={`https://instagram.com/${processedUsers[0].username}`} target="_blank" rel="noreferrer" className="flex items-center gap-2 bg-gradient-to-r from-purple-600 to-pink-600 text-white px-6 py-2 rounded-full text-sm font-bold hover:opacity-90 shadow-md">
-                                    <Instagram size={18}/> Profil öffnen
-                                </a>
-                            </div>
-                        </div>
+                        <p className="text-slate-600 italic whitespace-pre-wrap">{processedUsers[0].bio}</p>
                     </div>
-                ) : (
-                    <div className="text-center p-12 bg-white rounded-2xl shadow-sm border border-slate-200">
-                        <div className="text-4xl mb-4">🎉</div>
-                        <h2 className="text-xl font-bold text-slate-800 mb-2">Alles erledigt!</h2>
-                        <button onClick={() => setActiveTab('favorites')} className="mt-4 text-purple-600 font-bold hover:underline">Zu Favoriten</button>
-                    </div>
-                )}
-            </div>
-        ) : activeTab === 'export' ? (
-            <div className="bg-white p-6 md:p-8 rounded-xl shadow-sm border border-slate-200">
-                <h2 className="text-xl font-bold mb-6 flex items-center gap-2 text-slate-800"><Copy size={24}/> Datenverwaltung</h2>
-                
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                    {/* LIST EXPORT */}
-                    <div>
-                        <h3 className="font-bold text-slate-600 mb-2 flex items-center gap-2"><Copy size={18}/> Liste kopieren</h3>
-                        <p className="text-sm text-slate-400 mb-3">Kopiert die Benutzernamen der aktuell gefilterten/markierten Liste.</p>
-                        <textarea readOnly className="w-full h-40 p-4 bg-slate-50 border border-slate-200 rounded-lg font-mono text-sm focus:outline-none mb-3" value={processedUsers.map(u => u.username).join('\n')} />
-                        <div className="flex gap-2">
-                            <button onClick={() => {
-                                    navigator.clipboard.writeText(processedUsers.map(u => u.username).join('\n'));
-                                    setCopySuccess(true); setTimeout(() => setCopySuccess(false), 2000);
-                                    handleMarkExported(processedUsers.map(u => u.username));
-                                }} className="bg-slate-800 hover:bg-slate-900 text-white px-4 py-2 rounded-lg font-bold flex items-center gap-2 text-sm" disabled={processedUsers.length === 0}>
-                                {copySuccess ? <Check size={16}/> : <Copy size={16}/>} Kopieren
-                            </button>
-                            <button onClick={() => setSelectedUsers([])} className="bg-slate-200 hover:bg-slate-300 text-slate-700 px-4 py-2 rounded-lg font-bold flex items-center gap-2 text-sm" disabled={selectedUsers.length === 0}>
-                                <Trash2 size={16}/> Leeren
-                            </button>
-                        </div>
-                    </div>
-
-                    {/* BACKUP */}
-                    <div className="space-y-6">
-                        <div>
-                            <h3 className="font-bold text-slate-600 mb-2 flex items-center gap-2"><Download size={18}/> Backup erstellen</h3>
-                            <p className="text-sm text-slate-400 mb-3">Lade die komplette Datenbank als JSON herunter, um sie zu sichern.</p>
-                            <button onClick={handleDownloadBackup} className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg font-bold flex items-center gap-2 w-full justify-center">
-                                <Download size={20}/> Datenbank herunterladen
-                            </button>
-                        </div>
-
-                        <div className="pt-6 border-t border-slate-100">
-                            <h3 className="font-bold text-slate-600 mb-2 flex items-center gap-2"><Upload size={18}/> Backup wiederherstellen</h3>
-                            <p className="text-sm text-slate-400 mb-3">Lade eine zuvor gesicherte JSON-Datei hoch. Vorhandene Daten werden aktualisiert.</p>
-                            <label className="bg-white border-2 border-dashed border-slate-300 hover:border-blue-500 hover:bg-blue-50 text-slate-500 hover:text-blue-600 px-6 py-8 rounded-lg font-bold flex flex-col items-center gap-2 w-full justify-center cursor-pointer transition-colors">
-                                <Upload size={32}/>
-                                <span>Datei auswählen...</span>
-                                <input type="file" accept=".json" onChange={handleImportBackup} className="hidden" />
-                            </label>
-                        </div>
-                    </div>
-                </div>
+                ) : <p className="font-bold text-slate-400 text-xl">Keine User im Review 🎉</p>}
             </div>
         ) : (
-            // TABLE VIEW (Mobile Card / Desktop Table)
-            <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-x-auto relative">
-                
-                {/* Mobile View (Cards) */}
-                <div className="md:hidden space-y-4 p-4">
-                    {processedUsers.map((user) => {
-                        const isSelected = selectedUsers.includes(user.pk);
-                        const isFavorite = user.status === 'favorite';
-                        const isGerman = user.isGerman;
-                        const isNotGerman = user.isGerman === false; // NEU: Explizit false (nicht null)
-                        return (
-                            <div key={user.pk} className={`border rounded-xl p-4 shadow-sm transition-all hover:bg-green-50/50 ${isSelected ? 'bg-purple-50 border-purple-200 ring-1 ring-purple-200' : 'bg-white border-slate-100'} ${isFavorite ? 'bg-yellow-50/50' : ''} ${isGerman ? 'bg-yellow-100/60 border-yellow-200' : ''} ${isNotGerman ? 'bg-red-50/50 border-red-100' : ''}`}>
-                                
-                                {/* Header: Checkbox, Name, Badges */}
-                                <div className="flex justify-between items-start mb-3">
-                                    <div className="flex items-center gap-3 min-w-0 pr-2">
-                                        <input type="checkbox" checked={isSelected} onChange={() => toggleSelectUser(user.pk)} className="w-5 h-5 rounded accent-purple-600 flex-shrink-0"/>
-                                        <div className="min-w-0">
-                                            <div className="flex items-center gap-2">
-                                                <div className="font-bold text-lg truncate text-slate-800">{user.username}</div>
-                                                {user.status === 'new' && <span className="bg-purple-600 text-white text-[10px] px-1.5 py-0.5 rounded font-bold flex-shrink-0">NEU</span>}
-                                                {isGerman && <span className="bg-orange-500 text-white text-[10px] px-1.5 py-0.5 rounded font-bold flex-shrink-0 flex items-center gap-1" title={user.germanCheckResult}>🇩🇪 DACH</span>}
-                                                {isNotGerman && <span className="bg-red-100 text-red-600 text-[10px] px-1.5 py-0.5 rounded font-bold flex-shrink-0 border border-red-200">NO DE</span>}
-                                            </div>
-                                            <div className="text-xs text-slate-400 truncate">{user.fullName}</div>
-                                            {/* Nur anzeigen wenn Deutsch oder Fehler, nicht bei 'Nicht erkannt' */}
-                                            {user.germanCheckResult && (isGerman || user.germanCheckResult.includes('Fehler')) && (
-                                                <div className={`text-[10px] mt-1 font-medium break-words whitespace-normal ${isGerman ? 'text-orange-600' : 'text-red-400'}`}>
-                                                    {isGerman ? "🇩🇪 " : "Scan: "}{user.germanCheckResult}
-                                                </div>
-                                            )}
-                                        </div>
-                                    </div>
-                                    
-                                    {/* Action Buttons (Compact) */}
-                                    <div className="flex gap-1 flex-shrink-0">
-                                        <button onClick={() => handleStatusChange(user.pk, user.status === 'favorite' ? 'active' : 'favorite')} className={`p-2 rounded-lg border ${isFavorite ? 'bg-yellow-400 border-yellow-500 text-white' : 'bg-white border-slate-200 text-slate-300'}`}><Heart size={16} className={isFavorite ? 'fill-white' : ''}/></button>
-                                        <button onClick={() => handleStatusChange(user.pk, user.status === 'eng' ? 'active' : 'eng')} className={`p-2 rounded-lg border ${user.status === 'eng' ? 'bg-orange-400 border-orange-500 text-white' : 'bg-white border-slate-200 text-slate-300'}`}><Globe size={16}/></button>
-                                        <button onClick={() => handleStatusChange(user.pk, 'blocked')} className="p-2 bg-white border border-slate-200 rounded-lg text-slate-300 hover:text-red-500 hover:bg-red-50"><Ban size={16}/></button>
-                                        <button onClick={() => handleStatusChange(user.pk, user.status === 'hidden' ? 'active' : 'hidden')} className="p-2 bg-white border border-slate-200 rounded-lg text-slate-300 hover:text-slate-600 hover:bg-slate-50">{user.status === 'hidden' ? <EyeOff size={16} className="text-slate-600"/> : <EyeOff size={16}/>}</button>
-                                    </div>
-                                </div>
-
-                                {/* Status / Update Info */}
-                                {user.status === 'changed' && <div className="mb-2 text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded inline-block font-medium">Update: {user.changeDetails}</div>}
-
-                                {/* Bio & Links */}
-                                <div className="text-sm text-slate-600 mb-3 whitespace-pre-wrap line-clamp-3 leading-relaxed">{user.bio || <span className="italic text-slate-300">Keine Bio</span>}</div>
-                                
-                                <div className="space-y-1 mb-3">
-                                    {user.externalUrl && (
-                                        <a href={user.externalUrl} target="_blank" rel="noreferrer" className="flex items-center gap-2 text-blue-600 text-xs font-bold bg-blue-50 px-2 py-1.5 rounded hover:bg-blue-100 w-full truncate">
-                                            <Globe size={14} className="flex-shrink-0"/> <span className="truncate">{user.externalUrl.replace(/^https?:\/\//, '')}</span>
-                                        </a>
-                                    )}
-                                    {user.email && (
-                                        <div className="flex items-center gap-2 text-purple-700 text-xs font-bold bg-purple-50 px-2 py-1.5 rounded w-full truncate">
-                                            <Mail size={14} className="flex-shrink-0"/> <span className="truncate">{user.email}</span>
-                                        </div>
-                                    )}
-                                </div>
-
-                                {/* Footer: Metrics & Meta */}
-                                <div className="flex justify-between items-center text-xs text-slate-400 border-t border-slate-100 pt-3 mt-1">
-                                    <div className="flex items-center gap-3">
-                                        <span className="font-bold text-blue-600 bg-blue-50 px-2 py-0.5 rounded">{user.followersCount?.toLocaleString()} Follower</span>
-                                    </div>
-                                    <div className="text-right">
-                                        <div>{formatDate(user.foundDate)}</div>
-                                        <div className="text-[10px] text-slate-300 mt-0.5">Src: {user.sourceAccount}</div>
-                                    </div>
-                                </div>
-                            </div>
-                        )
-                    })}
+            <>
+            <div className="sticky top-[130px] xl:top-[73px] z-20 flex flex-col md:flex-row justify-between items-center bg-white/90 backdrop-blur-md p-3 rounded-xl shadow-sm border border-slate-200 gap-3 mb-6 transition-all">
+                <div className="flex flex-wrap items-center gap-3 w-full md:w-auto">
+                    <div className="relative w-full sm:w-72">
+                        <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                        <input type="text" placeholder="Suchen..." className="w-full pl-10 pr-4 py-2 bg-slate-50 border rounded-lg outline-none focus:border-purple-500 transition-all" value={filterText} onChange={(e) => setFilterText(e.target.value)} />
+                    </div>
+                    <button onClick={handleDachScan} className="bg-orange-50 text-orange-600 border border-orange-200 px-4 py-2 rounded-lg font-bold flex items-center gap-2 hover:bg-orange-100 transition-all"><Globe size={16}/> {selectedUsers.length > 0 ? `${selectedUsers.length} Scannen` : "Alle Scannen"}</button>
+                    <div className="flex bg-slate-100 p-1 rounded-lg gap-1 border">
+                        {['all', 'de', 'no_de', 'unscanned'].map(f => <button key={f} onClick={() => setDachFilter(f)} className={`px-3 py-1 rounded-md text-[10px] font-black tracking-tighter ${dachFilter === f ? 'bg-white text-purple-600 shadow-sm' : 'text-slate-500'}`}>{f === 'all' ? 'ALLE' : f === 'de' ? 'DE 🇩🇪' : f === 'no_de' ? 'NO DE ✘' : 'SCAN ⏳'}</button>)}
+                    </div>
                 </div>
+                <div className="flex items-center gap-3 w-full md:w-auto justify-between">
+                    <div className="flex bg-slate-50 p-1 rounded-lg border">
+                        <span className="text-[10px] font-bold text-slate-400 px-2 flex items-center">SHOW:</span>
+                        {[10, 20, 50, 100].map(s => <button key={s} onClick={() => setPageSize(s)} className={`px-2 py-1 rounded-md text-xs font-bold ${pageSize === s ? 'bg-white text-purple-600 shadow-sm' : 'text-slate-400'}`}>{s}</button>)}
+                    </div>
+                    {selectedUsers.length > 0 && (
+                        <div className="flex gap-1 animate-in zoom-in-95">
+                            <button onClick={() => setSelectedUsers(processedUsers.map(u => u.pk))} className="text-[10px] bg-white text-slate-700 px-2 py-1 rounded border border-slate-300 font-bold hover:bg-slate-50">Alle ({processedUsers.length})</button>
+                            <button onClick={handleDeleteSelected} className="bg-red-600 text-white p-2 rounded-lg hover:bg-red-700 shadow-lg shadow-red-100"><Trash2 size={16}/></button>
+                        </div>
+                    )}
+                </div>
+            </div>
 
-                {/* Desktop Table */}
-                <table className="w-full text-left table-fixed hidden md:table">
-                    <thead className="bg-slate-50 text-slate-500 font-bold border-b border-slate-200 uppercase tracking-wider text-sm">
+            <div className="bg-white rounded-xl border border-slate-200 overflow-x-auto relative">
+                <table className="w-full text-left table-fixed">
+                    <thead className="bg-slate-50 text-slate-500 font-bold border-b text-[10px] uppercase tracking-widest">
                         <tr>
-                            <th className="p-4 relative w-12"><input type="checkbox" checked={selectedUsers.length === processedUsers.length && processedUsers.length > 0} onChange={toggleSelectAll} className="w-4 h-4 rounded accent-purple-600"/><ResizeHandle id="select"/></th>
-                            
-                            <th className="p-4 relative hover:bg-slate-100 cursor-pointer group" style={{ width: colWidths.user }} onClick={() => requestSort('username')}>
-                                <div className="flex items-center gap-1">
-                                    User
-                                    {sortConfig.key === 'username' && <ArrowUpDown size={14} className={sortConfig.direction === 'asc' ? 'rotate-180' : ''}/>}
-                                </div>
-                                <ResizeHandle id="user"/>
-                            </th>
-
-                            <th className="p-4 relative" style={{ width: colWidths.actions }}>Aktionen<ResizeHandle id="actions"/></th>
-                            <th className="p-4 relative" style={{ width: colWidths.bio }}>Bio <ResizeHandle id="bio"/></th>
-                            
-                            <th className="p-4 relative hover:bg-slate-100 cursor-pointer group" style={{ width: colWidths.follower }} onClick={() => requestSort('followersCount')}>
-                                <div className="flex items-center gap-1">
-                                    Follower
-                                    {sortConfig.key === 'followersCount' && <ArrowUpDown size={14} className={sortConfig.direction === 'asc' ? 'rotate-180' : ''}/>}
-                                </div>
-                                <ResizeHandle id="follower"/>
-                            </th>
-
-                            <th className="p-4 relative hover:bg-slate-100 cursor-pointer group" style={{ width: colWidths.date }} onClick={() => requestSort('foundDate')}>
-                                <div className="flex items-center gap-1">
-                                    Datum
-                                    {sortConfig.key === 'foundDate' && <ArrowUpDown size={14} className={sortConfig.direction === 'asc' ? 'rotate-180' : ''}/>}
-                                </div>
-                                <ResizeHandle id="date"/>
-                            </th>
+                            <th className="p-4 w-12 text-center"><input type="checkbox" checked={paginatedUsers.length > 0 && paginatedUsers.every(u => selectedUsers.includes(u.pk))} onChange={toggleSelectAll} className="w-4 h-4 accent-purple-600"/></th>
+                            <th className="p-4 cursor-pointer hover:bg-slate-100 transition-colors" style={{width: colWidths.user}} onClick={() => requestSort('username')}><div className="flex items-center gap-1 text-slate-700">USER {sortConfig.key === 'username' && <ArrowUpDown size={12} className={sortConfig.direction === 'asc' ? 'rotate-180' : ''}/>}</div><ResizeHandle id="user"/></th>
+                            <th className="p-4" style={{width: colWidths.actions}}>AKTIONEN <ResizeHandle id="actions"/></th>
+                            <th className="p-4" style={{width: colWidths.bio}}>BIOGRAFIE <ResizeHandle id="bio"/></th>
+                            <th className="p-4 cursor-pointer hover:bg-slate-100 transition-colors" style={{width: colWidths.follower}} onClick={() => requestSort('followersCount')}><div className="flex items-center gap-1 text-slate-700">FOLLOWER {sortConfig.key === 'followersCount' && <ArrowUpDown size={12} className={sortConfig.direction === 'asc' ? 'rotate-180' : ''}/>}</div><ResizeHandle id="follower"/></th>
+                            <th className="p-4 cursor-pointer hover:bg-slate-100 transition-colors" style={{width: colWidths.date}} onClick={() => requestSort('foundDate')}><div className="flex items-center gap-1 text-slate-700">DATUM {sortConfig.key === 'foundDate' && <ArrowUpDown size={12} className={sortConfig.direction === 'asc' ? 'rotate-180' : ''}/>}</div><ResizeHandle id="date"/></th>
                         </tr>
                     </thead>
-                    <tbody className="divide-y divide-slate-100 text-base">
-                        {processedUsers.map((user) => {
-                            const isSelected = selectedUsers.includes(user.pk);
-                            const isFavorite = user.status === 'favorite';
-                            const isGerman = user.isGerman;
-                            const isNotGerman = user.isGerman === false;
-
+                    <tbody className="divide-y divide-slate-100 text-sm">
+                        {paginatedUsers.map((user) => {
+                            const isS = selectedUsers.includes(user.pk);
+                            const isG = user.isGerman;
+                            const isNG = user.isGerman === false;
                             return (
-                                <tr key={user.pk} className={`group transition-colors ${isSelected ? 'bg-purple-50' : 'hover:bg-green-50'} ${isFavorite ? 'bg-yellow-50' : ''} ${isGerman && !isFavorite && !isSelected ? 'bg-yellow-100/60' : ''} ${isNotGerman && !isSelected ? 'bg-red-50/40' : ''}`}>
-                                    <td className="p-4 align-top"><input type="checkbox" checked={isSelected} onChange={() => toggleSelectUser(user.pk)} className="w-4 h-4 rounded accent-purple-600 mt-2"/></td>
-                                    
-                                    <td className="p-4 align-top overflow-hidden">
+                                <tr key={user.pk} className={`group transition-all hover:bg-green-50/30 ${isS ? 'bg-purple-50/50' : ''} ${isG ? 'bg-yellow-100/40' : ''} ${isNG ? 'bg-red-50/30' : ''}`}>
+                                    <td className="p-4 text-center"><input type="checkbox" checked={isS} onChange={() => toggleSelectUser(user.pk)} className="w-4 h-4 accent-purple-600 transition-all scale-110"/></td>
+                                    <td className="p-4 align-top">
                                         <div className="flex items-center gap-3">
-                                            <div className="w-10 h-10 rounded-full bg-slate-200 flex-shrink-0 flex items-center justify-center font-bold text-slate-500 text-sm">{user.username[0].toUpperCase()}</div>
+                                            <div className="w-10 h-10 rounded-lg bg-slate-100 flex items-center justify-center font-black text-slate-400 shadow-inner">{user.username[0].toUpperCase()}</div>
                                             <div className="min-w-0">
-                                                <div className="flex items-center gap-2">
-                                                    <a href={`https://instagram.com/${user.username}`} target="_blank" className="font-bold text-lg text-slate-900 hover:text-purple-600 hover:underline block truncate">{user.username}</a>
-                                                    {isGerman && <span className="bg-orange-100 text-orange-700 border border-orange-200 text-[10px] px-1.5 rounded font-bold cursor-help" title={user.germanCheckResult}>🇩🇪</span>}
-                                                    {isNotGerman && <span className="text-red-500 text-[10px] font-bold border border-red-200 bg-red-50 px-1 rounded">NO DE</span>}
+                                                <div className="flex flex-wrap items-center gap-1.5">
+                                                    <a href={`https://instagram.com/${user.username}`} target="_blank" className="font-bold text-slate-900 hover:text-purple-600 transition-colors block truncate">{user.username}</a>
+                                                    {isG && <span className="bg-orange-100 text-orange-700 text-[10px] px-1.5 rounded font-black border border-orange-200">DE</span>}
                                                 </div>
-                                                
-                                                <div className="text-xs text-slate-400 truncate">{user.fullName}</div>
-                                                <div className="text-[10px] text-slate-300 mt-0.5 truncate">Src: {user.sourceAccount}</div>
-                                                {user.status === 'new' && <span className="inline-block mt-1 bg-purple-600 text-white text-[10px] px-1.5 rounded">NEU</span>}
-                                                {/* Nur anzeigen wenn Deutsch oder Fehler */}
-                                                {user.germanCheckResult && (isGerman || isNotGerman || user.germanCheckResult.includes('Fehler')) && (
-                                                    <div className={`text-[10px] mt-1 font-medium break-words whitespace-normal ${isGerman ? 'text-orange-600' : isNotGerman ? 'text-red-400' : 'text-red-400'}`}>
-                                                        {isGerman ? "🇩🇪 " : isNotGerman ? "✘ " : "Scan: "}{user.germanCheckResult}
-                                                    </div>
+                                                <div className="text-[10px] text-slate-400 font-medium truncate">{user.fullName}</div>
+                                                <div className="text-[9px] text-slate-300 font-bold uppercase mt-1 tracking-tighter">Src: {user.sourceAccount}</div>
+                                                {user.status === 'new' && <span className="inline-block mt-1 bg-purple-600 text-white text-[8px] px-1.5 rounded-full font-bold">NEU</span>}
+                                                {user.germanCheckResult && (isG || isNG) && (
+                                                    <div className={`text-[9px] mt-1.5 font-bold px-1.5 py-0.5 rounded border ${isG ? 'bg-orange-50 text-orange-600 border-orange-100' : 'bg-red-50 text-red-600 border-red-100'}`}>DE {isG ? 'Sofort: ' : 'Scan: '}{user.germanCheckResult}</div>
                                                 )}
                                             </div>
                                         </div>
                                     </td>
-
                                     <td className="p-4 align-top">
-                                        <div className="flex flex-wrap gap-2">
-                                            <button onClick={() => handleStatusChange(user.pk, user.status === 'favorite' ? 'active' : 'favorite')} className={`p-2 rounded-lg border shadow-sm transition-colors ${user.status === 'favorite' ? 'bg-yellow-400 border-yellow-500 text-white' : 'bg-white border-slate-200 text-slate-400 hover:bg-yellow-50 hover:text-yellow-500'}`} title="Favorit">
-                                                <Heart size={18} className={user.status === 'favorite' ? 'fill-white' : ''}/>
-                                            </button>
-                                            <button onClick={() => handleStatusChange(user.pk, user.status === 'eng' ? 'active' : 'eng')} className={`p-2 rounded-lg border shadow-sm transition-colors ${user.status === 'eng' ? 'bg-orange-400 border-orange-500 text-white' : 'bg-white border-slate-200 text-slate-400 hover:bg-orange-50 hover:text-orange-500'}`} title="English">
-                                                <Globe size={18}/>
-                                            </button>
-                                            <button onClick={() => handleStatusChange(user.pk, 'blocked')} className="p-2 bg-white border border-slate-200 rounded-lg shadow-sm text-slate-400 hover:bg-red-50 hover:text-red-600 hover:border-red-200" title="Blockieren"><Ban size={18}/></button>
-                                            <button onClick={() => handleStatusChange(user.pk, user.status === 'hidden' ? 'active' : 'hidden')} className="p-2 bg-white border border-slate-200 rounded-lg shadow-sm text-slate-400 hover:bg-slate-100 hover:text-slate-600" title={user.status === 'hidden' ? 'Anzeigen' : 'Verstecken'}>
-                                                {user.status === 'hidden' ? <EyeOff size={18}/> : <EyeOff size={18} className="opacity-50"/>}
-                                            </button>
+                                        <div className="flex gap-1">
+                                            <button onClick={() => handleStatusChange(user.pk, user.status === 'favorite' ? 'active' : 'favorite')} className={`p-2 rounded-lg border transition-all ${user.status === 'favorite' ? 'bg-yellow-400 border-yellow-500 text-white shadow-md shadow-yellow-100' : 'bg-white text-slate-300 hover:bg-yellow-50 hover:text-yellow-500'}`} title="Favorit"><Heart size={16} className={user.status === 'favorite' ? 'fill-white' : ''}/></button>
+                                            <button onClick={() => handleStatusChange(user.pk, user.status === 'eng' ? 'active' : 'eng')} className={`p-2 rounded-lg border transition-all ${user.status === 'eng' ? 'bg-orange-400 border-orange-500 text-white shadow-md shadow-orange-100' : 'bg-white text-slate-300 hover:bg-orange-50 hover:text-orange-500'}`} title="English"><Globe size={16}/></button>
+                                            <button onClick={() => handleStatusChange(user.pk, 'blocked')} className="p-2 bg-white border rounded-lg text-slate-300 hover:text-red-600 hover:bg-red-50 transition-all" title="Blockieren"><Ban size={16}/></button>
+                                            <button onClick={() => handleStatusChange(user.pk, user.status === 'hidden' ? 'active' : 'hidden')} className="p-2 bg-white border rounded-lg text-slate-300 hover:text-slate-600 transition-all" title="Verstecken"><EyeOff size={16} className={user.status === 'hidden' ? 'text-slate-600' : 'opacity-30'}/></button>
                                         </div>
                                     </td>
-
-                                    <td className="p-4 align-top">
-                                        {user.status === 'changed' && <div className="mb-1 text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded inline-block">Update: {user.changeDetails}</div>}
-                                        <div className="text-slate-600 text-sm whitespace-pre-wrap break-words">{user.bio}</div>
-                                        {user.externalUrl && (
-                                            <a href={user.externalUrl} target="_blank" rel="noreferrer" className="mt-2 flex items-center gap-1 text-blue-600 font-bold text-xs hover:underline bg-blue-50 px-2 py-1 rounded w-fit max-w-full truncate">
-                                                <Globe size={12}/> {user.externalUrl.replace(/^https?:\/\//, '')}
-                                            </a>
-                                        )}
-                                        {user.email && <div className="mt-2 flex items-center gap-1 text-purple-700 font-bold text-xs"><Mail size={12}/> {user.email}</div>}
-                                    </td>
-
-                                    <td className="p-4 align-top">
-                                        <div className="font-bold text-blue-600">{user.followersCount?.toLocaleString()}</div>
-                                    </td>
-
-                                    <td className="p-4 align-top text-xs text-slate-500">
-                                        <div>{formatDate(user.foundDate)}</div>
-                                        {user.lastExported && <div className="text-green-600 mt-1">Exp: {formatDate(user.lastExported)}</div>}
-                                    </td>
+                                    <td className="p-4 align-top"><div className="text-slate-600 text-xs whitespace-pre-wrap line-clamp-4 leading-relaxed">{user.bio}</div></td>
+                                    <td className="p-4 align-top"><div className="font-bold text-blue-600 text-base">{user.followersCount?.toLocaleString()}</div></td>
+                                    <td className="p-4 align-top text-[10px] text-slate-400 font-bold">{formatDate(user.foundDate)}</td>
                                 </tr>
                             );
                         })}
                     </tbody>
                 </table>
             </div>
+            {totalPages > 1 && (
+                <div className="flex items-center justify-center gap-4 py-10">
+                    <button disabled={currentPage === 1} onClick={() => setCurrentPage(prev => prev - 1)} className="p-3 bg-white border rounded-xl shadow-sm hover:text-purple-600 disabled:opacity-30 transition-all active:scale-90"><ArrowUpDown className="rotate-90" size={20} /></button>
+                    <div className="flex items-center gap-2"><span className="text-xs font-black text-slate-400 uppercase tracking-widest">Seite</span><span className="bg-white px-4 py-2 rounded-xl border-2 border-purple-100 font-black text-purple-600 text-base">{currentPage}</span><span className="text-xs font-black text-slate-400 uppercase tracking-widest">von {totalPages}</span></div>
+                    <button disabled={currentPage === totalPages} onClick={() => setCurrentPage(prev => prev + 1)} className="p-3 bg-white border rounded-xl shadow-sm hover:text-purple-600 disabled:opacity-30 transition-all active:scale-90"><ArrowUpDown className="-rotate-90" size={20} /></button>
+                </div>
+            )}
+            </>
         )}
       </main>
     </div>
