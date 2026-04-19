@@ -51,17 +51,32 @@ CORS(app)
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024 
 
 # --- DATENBANK KONFIGURATION ---
-# Variante A: Lokal & Online nutzen IMMER dieselbe Cloud-DB (DATABASE_URL aus .env).
-# So gibt es nur eine Wahrheit, kein JSON-Hin-und-Her zwischen Umgebungen.
-DATABASE_URL = os.environ.get("DATABASE_URL")
+# Variante A: Lokal & Online nutzen IMMER dieselbe Cloud-DB.
+#
+# Vorrang-Reihenfolge (wichtig fuer Replit!):
+#   1. NEON_DATABASE_URL  -> wenn gesetzt, wird IMMER diese genutzt.
+#                            Damit kann Replit Agent uns die DB nicht "klauen",
+#                            indem er DATABASE_URL auf seine interne Postgres
+#                            umbiegt. Setze NEON_DATABASE_URL in den Replit-
+#                            Secrets, dann ist DATABASE_URL egal.
+#   2. DATABASE_URL       -> Fallback (lokal via .env, klassische Hoster).
+DATABASE_URL = os.environ.get("NEON_DATABASE_URL") or os.environ.get("DATABASE_URL")
+DATABASE_URL_SOURCE = "NEON_DATABASE_URL" if os.environ.get("NEON_DATABASE_URL") else "DATABASE_URL"
+
 if not DATABASE_URL:
-    print("❌ FEHLER: DATABASE_URL fehlt in .env – ohne Cloud-DB kann der Server nicht starten.")
-    print("   Trage deine Postgres-URL (z.B. von Neon) in die .env ein.")
+    print("❌ FEHLER: Weder NEON_DATABASE_URL noch DATABASE_URL gesetzt.")
+    print("   Trage deine Postgres-URL (z.B. von Neon) in die .env oder Replit-Secrets ein.")
     sys.exit(1)
 
 # Heroku/Render/Neon liefern manchmal noch das alte 'postgres://'-Schema – SQLAlchemy braucht 'postgresql://'.
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
+# Warnung, falls aus Versehen eine Replit-interne DB benutzt wird.
+_db_host = DATABASE_URL.split('@')[-1].split('/')[0].lower()
+if any(marker in _db_host for marker in ("helium", "replit.dev", ".repl.co")):
+    print(f"⚠️  WARNUNG: DATABASE_URL zeigt auf eine Replit-interne DB ({_db_host}).")
+    print("   Setze NEON_DATABASE_URL in den Secrets, um deine externe Neon-DB zu erzwingen.")
 
 app.config['SQLALCHEMY_DATABASE_URI'] = DATABASE_URL
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
@@ -71,7 +86,7 @@ app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
     "pool_size": 5,
     "max_overflow": 10,
 }
-print(f"--- ☁️  CLOUD-MODUS: verbunden mit {DATABASE_URL.split('@')[-1].split('/')[0]} ---")
+print(f"--- ☁️  CLOUD-MODUS: verbunden mit {_db_host} (Quelle: {DATABASE_URL_SOURCE}) ---")
 
 class Base(DeclarativeBase):
   pass
