@@ -21,8 +21,12 @@ services:
       npm install &&
       npm run build
 
-    # Start: gunicorn mit dem dynamischen $PORT von Render binden
-    startCommand: gunicorn --bind 0.0.0.0:$PORT --workers 2 --timeout 120 main:app
+    # Start: gunicorn mit dem dynamischen $PORT von Render binden.
+    # WICHTIG: nur 1 Worker, weil Hintergrund-Threads (Scans) im selben
+    # Prozess laufen muessen wie der Status-Endpunkt der vom Frontend
+    # gepollt wird. Mehrere Worker -> Job laeuft in A, Status-Request
+    # landet in B -> "not_found". Single-User-App -> 1 Worker reicht.
+    startCommand: gunicorn --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 600 main:app
 
     envVars:
       - key: PYTHON_VERSION

@@ -6,7 +6,7 @@ import threading
 import os
 import requests
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from flask import Flask, request, jsonify, send_from_directory
 
 # Encoding Fix für Windows Terminals (Emojis)
@@ -139,10 +139,63 @@ class Lead(db.Model):
             "germanCheckResult": self.german_check_result
         }
 
+class ScanJob(db.Model):
+    """Persistierter Scan-Status. Lebt in der DB damit:
+       - Scans Reload, Worker-Restart und Render-Redeploy ueberleben
+       - Der Status von jedem Geraet abrufbar ist
+       - Mehrere gunicorn-Worker dieselbe Wahrheit sehen
+    """
+    __tablename__ = 'scan_jobs'
+    id = db.Column(db.Integer, primary_key=True)
+    job_type = db.Column(db.String(20), nullable=False)        # 'dach' | 'target'
+    label = db.Column(db.String(255), nullable=True)           # z.B. Target-Username oder "DACH-Scan (227 User)"
+    status = db.Column(db.String(20), default='running')       # running | finished | error | stopped | interrupted
+    total = db.Column(db.Integer, default=0)
+    processed = db.Column(db.Integer, default=0)
+    found = db.Column(db.Integer, default=0)                   # bei target-scan: wie viele neue Leads
+    current_message = db.Column(db.Text, default='')
+    error_message = db.Column(db.Text, nullable=True)
+    started_at = db.Column(db.DateTime, default=datetime.utcnow)
+    last_heartbeat = db.Column(db.DateTime, default=datetime.utcnow)
+    finished_at = db.Column(db.DateTime, nullable=True)
+    stop_requested = db.Column(db.Boolean, default=False)
+
+    def to_dict(self):
+        elapsed = None
+        eta = None
+        now = datetime.utcnow()
+        if self.started_at:
+            elapsed = int((now - self.started_at).total_seconds())
+            if self.processed > 0 and self.total > 0 and self.status == 'running':
+                rate = elapsed / self.processed                  # Sek pro User
+                remaining = max(0, self.total - self.processed)
+                eta = int(rate * remaining)
+        return {
+            "id": self.id,
+            "type": self.job_type,
+            "label": self.label,
+            "status": self.status,
+            "total": self.total,
+            "processed": self.processed,
+            "found": self.found,
+            "percent": round((self.processed / self.total) * 100, 1) if self.total else 0,
+            "message": self.current_message or "",
+            "error": self.error_message,
+            "stopRequested": self.stop_requested,
+            "startedAt": self.started_at.isoformat() if self.started_at else None,
+            "lastHeartbeat": self.last_heartbeat.isoformat() if self.last_heartbeat else None,
+            "finishedAt": self.finished_at.isoformat() if self.finished_at else None,
+            "elapsedSeconds": elapsed,
+            "etaSeconds": eta,
+        }
+
+
 def update_db_schema():
+    """Idempotente Schema-Migrationen fuer bereits existierende DBs."""
     with app.app_context():
         try:
             inspector = db.inspect(db.engine)
+            # Lead-Tabelle: zwei Spalten nachruesten
             columns = [c['name'] for c in inspector.get_columns('leads')]
             if 'is_german' not in columns:
                 with db.engine.connect() as conn:
@@ -152,7 +205,26 @@ def update_db_schema():
                 with db.engine.connect() as conn:
                     conn.execute(text("ALTER TABLE leads ADD COLUMN german_check_result TEXT"))
                     conn.commit()
-        except: pass
+        except Exception as e:
+            print(f"⚠️  Schema-Migration (leads) uebersprungen: {e}")
+
+        # Beim Start: alle "running" Jobs deren Heartbeat lange tot ist als 'interrupted' markieren.
+        # Damit zeigt das Frontend nach einem Render-Redeploy nicht ewig einen toten Job.
+        try:
+            cutoff = datetime.utcnow() - timedelta(minutes=2)
+            stale = ScanJob.query.filter(
+                ScanJob.status == 'running',
+                ScanJob.last_heartbeat < cutoff,
+            ).all()
+            for j in stale:
+                j.status = 'interrupted'
+                j.error_message = 'Worker wurde neu gestartet (z.B. durch Deploy oder Crash).'
+                j.finished_at = datetime.utcnow()
+            if stale:
+                db.session.commit()
+                print(f"🧹 {len(stale)} verwaiste Scan-Jobs aufgeraeumt.")
+        except Exception as e:
+            print(f"⚠️  Cleanup verwaister Jobs uebersprungen: {e}")
 
 def seed_db_from_json():
     try:
@@ -194,7 +266,72 @@ def set_permissions_policy(response):
 def internal_error(error):
     return jsonify({"error": "Internal Server Error", "details": str(error)}), 500
 
-JOBS = {}
+JOBS = {}  # Legacy in-memory state - bleibt fuer Rueckwaertskompatibilitaet alter Endpunkte
+
+# --- ScanJob Helpers ---
+
+HEARTBEAT_INTERVAL_SECONDS = 5  # max. wie oft wir DB schreiben (vermeidet Spam)
+_last_heartbeat_at = {}         # job_id -> datetime des letzten DB-Updates
+
+
+def _job_should_stop(job_id):
+    """Pruefe ob im DB-Job das stop_requested-Flag gesetzt ist.
+    Wir muessen explizit refreshen, sonst sieht der Worker die Aenderung nicht.
+    """
+    try:
+        job = db.session.get(ScanJob, job_id)
+        if job is None:
+            return True  # Job geloescht -> stoppen
+        db.session.refresh(job)
+        return bool(job.stop_requested)
+    except Exception:
+        db.session.rollback()
+        return False
+
+
+def _heartbeat(job_id, *, processed=None, found=None, message=None, force=False):
+    """Schreibt Fortschritt + Heartbeat in die DB. Throttled auf
+    HEARTBEAT_INTERVAL_SECONDS, ausser force=True.
+    """
+    now = datetime.utcnow()
+    last = _last_heartbeat_at.get(job_id)
+    if not force and last and (now - last).total_seconds() < HEARTBEAT_INTERVAL_SECONDS:
+        # nur memory-update fuer message wenn wir eh nicht in DB schreiben
+        return
+    try:
+        job = db.session.get(ScanJob, job_id)
+        if job is None:
+            return
+        if processed is not None:
+            job.processed = processed
+        if found is not None:
+            job.found = found
+        if message is not None:
+            job.current_message = message[:5000] if len(message) > 5000 else message
+        job.last_heartbeat = now
+        db.session.commit()
+        _last_heartbeat_at[job_id] = now
+    except Exception as e:
+        db.session.rollback()
+        print(f"⚠️  heartbeat fehlgeschlagen fuer Job {job_id}: {e}")
+
+
+def _finalize_job(job_id, status, error=None):
+    """Markiert Job als finished/error/stopped und setzt finished_at."""
+    try:
+        job = db.session.get(ScanJob, job_id)
+        if job is None:
+            return
+        job.status = status
+        job.finished_at = datetime.utcnow()
+        if error is not None:
+            job.error_message = str(error)[:5000]
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        print(f"⚠️  finalize fehlgeschlagen fuer Job {job_id}: {e}")
+    finally:
+        _last_heartbeat_at.pop(job_id, None)
 
 # --- DACH ANALYSE LOGIK ---
 
@@ -299,39 +436,145 @@ def get_users():
 @app.route('/api/add-target', methods=['POST'])
 def add_target():
     u = request.json.get('username')
+    if not u:
+        return jsonify({"error": "Kein Username"}), 400
     if not Target.query.filter_by(username=u).first():
         db.session.add(Target(username=u))
         db.session.commit()
-    threading.Thread(target=scrape_target_logic, args=(u,)).start()
-    return jsonify({"success": True, "job_id": u})
+
+    existing = ScanJob.query.filter_by(status='running').first()
+    if existing:
+        return jsonify({"error": "Es laeuft bereits ein Scan", "activeJobId": existing.id}), 409
+
+    job = ScanJob(
+        job_type='target',
+        label=f"Target: {u}",
+        status='running',
+        total=0,            # unbekannt - wird waehrend des Scans gesetzt
+        processed=0,
+        current_message='Lade...',
+    )
+    db.session.add(job)
+    db.session.commit()
+    job_id = job.id
+
+    threading.Thread(target=scrape_target_logic, args=(u, job_id), daemon=True).start()
+    return jsonify({"success": True, "job_id": job_id, "legacyKey": u})
 
 @app.route('/api/get-job-status', methods=['GET'])
 def get_job_status():
-    u = request.args.get('username')
-    job = JOBS.get(u)
-    if not job: return jsonify({"status": "not_found"})
-    safe_job = {k: str(v) if k in ['message', 'status', 'start_time'] else v for k,v in job.items()}
+    """Legacy-Endpunkt. Sucht zuerst in der DB (wenn Frontend job_id schickt),
+    sonst im alten in-memory JOBS-Dict.
+    """
+    raw = request.args.get('username')
+    if raw and raw.isdigit():
+        job = db.session.get(ScanJob, int(raw))
+        if job:
+            d = job.to_dict()
+            d['found'] = job.found  # alter Frontend-Key
+            return jsonify(d)
+    job = JOBS.get(raw)
+    if not job:
+        return jsonify({"status": "not_found"})
+    safe_job = {k: str(v) if k in ['message', 'status', 'start_time'] else v for k, v in job.items()}
     return jsonify(safe_job)
+
+
+@app.route('/api/scans/active', methods=['GET'])
+def scans_active():
+    """Gibt den aktuell aktiven Scan zurueck (max. einer parallel).
+    Wenn keiner laeuft: status='idle'.
+    Frontend pollt das alle 2 Sek - das ist die Single-Source-of-Truth
+    fuer den Header.
+    """
+    job = ScanJob.query.filter_by(status='running').order_by(ScanJob.started_at.desc()).first()
+    if not job:
+        # Optional: letzten beendeten Job zurueckgeben damit Frontend kurz "fertig" anzeigt
+        recent = ScanJob.query.filter(
+            ScanJob.status.in_(['finished', 'error', 'stopped', 'interrupted']),
+            ScanJob.finished_at >= datetime.utcnow() - timedelta(seconds=10),
+        ).order_by(ScanJob.finished_at.desc()).first()
+        if recent:
+            return jsonify({"active": False, "recent": recent.to_dict()})
+        return jsonify({"active": False, "recent": None})
+    return jsonify({"active": True, "job": job.to_dict()})
+
+
+@app.route('/api/scans/<int:job_id>/stop', methods=['POST'])
+def scans_stop(job_id):
+    job = db.session.get(ScanJob, job_id)
+    if not job:
+        return jsonify({"error": "Job nicht gefunden"}), 404
+    if job.status != 'running':
+        return jsonify({"error": f"Job ist {job.status}, kann nicht gestoppt werden"}), 400
+    job.stop_requested = True
+    job.current_message = (job.current_message or "") + " | Stop angefordert..."
+    db.session.commit()
+    return jsonify({"success": True, "job": job.to_dict()})
+
+
+@app.route('/api/scans/<int:job_id>', methods=['GET'])
+def scans_get(job_id):
+    job = db.session.get(ScanJob, job_id)
+    if not job:
+        return jsonify({"error": "Job nicht gefunden"}), 404
+    return jsonify(job.to_dict())
 
 @app.route('/api/analyze-german', methods=['POST'])
 def analyze_german():
     names = request.json.get('usernames', [])
-    job_id = f"dach_{int(time.time())}"
-    JOBS[job_id] = {'status': 'running', 'found': 0, 'total': len(names), 'message': 'Starte Scan...'}
+    if not names:
+        return jsonify({"error": "Keine Usernamen uebergeben"}), 400
+
+    # Verhindern, dass parallel mehrere DACH-Scans laufen.
+    existing = ScanJob.query.filter_by(status='running').first()
+    if existing:
+        return jsonify({"error": "Es laeuft bereits ein Scan", "activeJobId": existing.id}), 409
+
+    job = ScanJob(
+        job_type='dach',
+        label=f"DACH-Scan ({len(names)} User)",
+        status='running',
+        total=len(names),
+        processed=0,
+        current_message='Starte Scan...',
+    )
+    db.session.add(job)
+    db.session.commit()
+    job_id = job.id
+
     def run():
         with app.app_context():
-            cl = Client(token=API_KEY)
-            for idx, name in enumerate(names):
-                def update_progress(msg): JOBS[job_id]['message'] = f"[{idx+1}/{len(names)}] {name}: {msg}"
-                lead = Lead.query.filter(Lead.username.ilike(name)).first()
-                if lead:
-                    is_de, res = analyze_german_deep(cl, lead.username, update_fn=update_progress)
-                    lead.is_german, lead.german_check_result = is_de, res
-                    db.session.commit()
-                JOBS[job_id]['found'] = idx + 1
-            JOBS[job_id]['status'] = 'finished'
-            JOBS[job_id]['message'] = 'Scan abgeschlossen'
-    threading.Thread(target=run).start()
+            try:
+                cl = Client(token=API_KEY)
+                for idx, name in enumerate(names):
+                    if _job_should_stop(job_id):
+                        _finalize_job(job_id, 'stopped')
+                        return
+
+                    def update_progress(msg, _idx=idx, _name=name):
+                        _heartbeat(job_id, message=f"[{_idx+1}/{len(names)}] {_name}: {msg}")
+
+                    try:
+                        lead = Lead.query.filter(Lead.username.ilike(name)).first()
+                        if lead:
+                            is_de, res = analyze_german_deep(cl, lead.username, update_fn=update_progress)
+                            lead.is_german, lead.german_check_result = is_de, res
+                            db.session.commit()
+                    except Exception as inner:
+                        db.session.rollback()
+                        print(f"⚠️  Fehler bei {name}: {inner}")
+
+                    _heartbeat(job_id, processed=idx + 1,
+                               message=f"[{idx+1}/{len(names)}] {name}: fertig", force=True)
+
+                _heartbeat(job_id, processed=len(names),
+                           message='Scan abgeschlossen', force=True)
+                _finalize_job(job_id, 'finished')
+            except Exception as e:
+                _finalize_job(job_id, 'error', error=e)
+
+    threading.Thread(target=run, daemon=True).start()
     return jsonify({"success": True, "job_id": job_id})
 
 @app.route('/api/import', methods=['POST'])
@@ -460,38 +703,66 @@ def serve(path):
     try: return send_from_directory(app.static_folder, path)
     except: return send_from_directory(app.static_folder, 'index.html')
 
-def scrape_target_logic(target_username):
-    global JOBS
-    JOBS[target_username] = {'status': 'running', 'found': 0, 'message': 'Lade...', 'start_time': datetime.now().isoformat()}
+def scrape_target_logic(target_username, job_id):
+    """Folgt der Following-Liste eines Targets. Persistiert Fortschritt
+    in der ScanJob-Tabelle, damit es Reload/Worker-Restart ueberlebt.
+    """
     with app.app_context():
-        cl = Client(token=API_KEY)
         try:
+            cl = Client(token=API_KEY)
             t_info = cl.user_by_username_v1(target_username)
             t_id = t_info.get('pk')
             end_cursor = None
+            processed = 0
             found = 0
             while True:
+                if _job_should_stop(job_id):
+                    _finalize_job(job_id, 'stopped')
+                    return
+
                 users, next_cursor = cl.user_following_chunk_gql(t_id, end_cursor=end_cursor)
-                if not users: break
+                if not users:
+                    break
                 for u in users:
+                    if _job_should_stop(job_id):
+                        _finalize_job(job_id, 'stopped')
+                        return
+                    processed += 1
                     pk = int(u.get('pk') or u.get('id'))
                     if not db.session.get(Lead, pk):
-                        det = cl.user_by_username_v1(u.get('username'))
-                        lead = Lead(pk=pk, username=u.get('username'), full_name=u.get('full_name'), bio=det.get('biography', ''), 
-                                    email=det.get('public_email'), followers_count=det.get('follower_count', 0),
-                                    source_account=target_username, found_date=datetime.now().isoformat(), status="new")
-                        db.session.add(lead)
-                        db.session.commit()
-                        found += 1
-                        JOBS[target_username]['found'] = found
-                        JOBS[target_username]['message'] = f"{found} gefunden"
-                if not next_cursor: break
+                        try:
+                            det = cl.user_by_username_v1(u.get('username'))
+                            lead = Lead(
+                                pk=pk, username=u.get('username'), full_name=u.get('full_name'),
+                                bio=det.get('biography', ''), email=det.get('public_email'),
+                                followers_count=det.get('follower_count', 0),
+                                source_account=target_username,
+                                found_date=datetime.now().isoformat(), status="new",
+                            )
+                            db.session.add(lead)
+                            db.session.commit()
+                            found += 1
+                        except Exception as inner:
+                            db.session.rollback()
+                            print(f"⚠️  Konnte {u.get('username')} nicht laden: {inner}")
+                    _heartbeat(job_id, processed=processed, found=found,
+                               message=f"{processed} geprueft, {found} neu")
+                if not next_cursor:
+                    break
                 end_cursor = next_cursor
                 time.sleep(1)
-            JOBS[target_username]['status'] = 'finished'
+
+            # Target last_scraped aktualisieren
+            target_row = Target.query.filter_by(username=target_username).first()
+            if target_row:
+                target_row.last_scraped = datetime.now().isoformat()
+                db.session.commit()
+
+            _heartbeat(job_id, processed=processed, found=found,
+                       message=f"Fertig: {found} neue Leads von {processed} geprueften", force=True)
+            _finalize_job(job_id, 'finished')
         except Exception as e:
-            JOBS[target_username]['status'] = 'error'
-            JOBS[target_username]['message'] = str(e)
+            _finalize_job(job_id, 'error', error=e)
 
 if __name__ == '__main__':
     with app.app_context():

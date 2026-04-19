@@ -43,6 +43,93 @@ const Preloader = () => (
 
 const IS_LOCAL = typeof window !== 'undefined' && ['localhost', '127.0.0.1', '::1'].includes(window.location.hostname);
 
+// --- Sek -> "mm:ss" / "hh:mm:ss" ---
+const formatDuration = (totalSeconds) => {
+    if (totalSeconds == null || totalSeconds < 0) return "-";
+    const h = Math.floor(totalSeconds / 3600);
+    const m = Math.floor((totalSeconds % 3600) / 60);
+    const s = totalSeconds % 60;
+    if (h > 0) return `${h}h ${String(m).padStart(2,'0')}m ${String(s).padStart(2,'0')}s`;
+    if (m > 0) return `${m}m ${String(s).padStart(2,'0')}s`;
+    return `${s}s`;
+};
+
+// Persistenter Scan-Banner. Pollt /api/scans/active und ist von ueberall sichtbar.
+// Bleibt nach Reload + Login von anderem Geraet bestehen, weil der State in der DB liegt.
+const ScanBanner = ({ scan, recent, onStop }) => {
+    if (!scan && !recent) return null;
+    const isRecent = !scan && recent;
+    const j = scan || recent;
+    const percent = j.percent || 0;
+    const isStopping = j.stopRequested && j.status === 'running';
+
+    const statusColor = {
+        running: 'from-orange-500 to-pink-500',
+        finished: 'from-green-500 to-emerald-500',
+        error: 'from-red-500 to-rose-500',
+        stopped: 'from-slate-500 to-slate-600',
+        interrupted: 'from-amber-500 to-orange-500',
+    }[j.status] || 'from-slate-500 to-slate-600';
+
+    const statusLabel = {
+        running: isStopping ? 'Wird gestoppt...' : 'Scan läuft',
+        finished: '✓ Scan abgeschlossen',
+        error: '✗ Fehler',
+        stopped: '◼ Scan gestoppt',
+        interrupted: '⚠ Unterbrochen (Server-Restart)',
+    }[j.status] || j.status;
+
+    return (
+        <div className={`sticky top-0 z-50 bg-gradient-to-r ${statusColor} text-white shadow-lg animate-in slide-in-from-top duration-300`}>
+            <div className="w-full px-4 md:px-8 py-3">
+                <div className="flex flex-col md:flex-row items-start md:items-center gap-3">
+                    <div className="flex items-center gap-2 min-w-0 flex-1">
+                        {j.status === 'running' && !isStopping && <Loader2 size={18} className="animate-spin flex-shrink-0"/>}
+                        <div className="min-w-0">
+                            <div className="font-bold text-sm truncate">{statusLabel} — {j.label || j.type}</div>
+                            <div className="text-xs opacity-90 truncate">{j.message}</div>
+                        </div>
+                    </div>
+
+                    {j.total > 0 && (
+                        <div className="flex items-center gap-3 text-xs flex-shrink-0">
+                            <span className="font-mono bg-black/20 rounded px-2 py-1">{j.processed}/{j.total}</span>
+                            <span className="font-mono bg-black/20 rounded px-2 py-1">{percent.toFixed(1)}%</span>
+                        </div>
+                    )}
+                    {j.type === 'target' && j.found != null && (
+                        <span className="font-mono bg-black/20 rounded px-2 py-1 text-xs flex-shrink-0">{j.found} neu</span>
+                    )}
+
+                    <div className="flex items-center gap-2 text-xs flex-shrink-0">
+                        <div className="bg-black/20 rounded px-2 py-1">⏱ {formatDuration(j.elapsedSeconds)}</div>
+                        {j.etaSeconds != null && <div className="bg-black/20 rounded px-2 py-1">noch {formatDuration(j.etaSeconds)}</div>}
+                    </div>
+
+                    {j.status === 'running' && !isRecent && (
+                        <button
+                            onClick={() => onStop(j.id)}
+                            disabled={isStopping}
+                            className="bg-white text-red-600 hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed font-bold px-4 py-1.5 rounded-lg text-xs flex items-center gap-1 shadow-md flex-shrink-0"
+                        >
+                            <XCircle size={14}/> {isStopping ? 'Stoppe...' : 'Stop'}
+                        </button>
+                    )}
+                </div>
+
+                {j.total > 0 && (
+                    <div className="mt-2 h-1.5 bg-black/30 rounded-full overflow-hidden">
+                        <div
+                            className="h-full bg-white/90 transition-all duration-500 ease-out"
+                            style={{width: `${Math.min(100, percent)}%`}}
+                        />
+                    </div>
+                )}
+            </div>
+        </div>
+    );
+};
+
 export default function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(() => IS_LOCAL || localStorage.getItem('insta_auth') === 'true');
   const [password, setPassword] = useState("");
@@ -71,7 +158,8 @@ export default function App() {
   const [currentPage, setCurrentPage] = useState(1);
   const [sortConfig, setSortConfig] = useState({ key: 'foundDate', direction: 'desc' });
   const [hideEnglishInEmail, setHideEnglishInEmail] = useState(false);
-  const [activeJob, setActiveJob] = useState(null);
+  const [activeScan, setActiveScan] = useState(null);     // aktueller Job aus DB (Polling /api/scans/active)
+  const [recentScan, setRecentScan] = useState(null);     // gerade beendet, kurz weiter anzeigen
   const [copySuccess, setCopySuccess] = useState(false);
 
   const [colWidths, setColWidths] = useState(() => {
@@ -119,28 +207,60 @@ export default function App() {
 
   useEffect(() => { if (isAuthenticated) loadData(); }, [isAuthenticated]);
 
+  // GLOBALES SCAN-POLLING. Laeuft ununterbrochen wenn eingeloggt.
+  // Holt den aktiven Scan-Status aus der DB - funktioniert daher
+  // auch nach Reload, von anderen Geraeten und nach Render-Restarts.
   useEffect(() => {
-    let interval;
-    if (activeJob && !['finished', 'error'].includes(activeJob.status)) {
-      interval = setInterval(async () => {
-        try {
-          const res = await fetch(`${API_URL}/get-job-status?username=${encodeURIComponent(activeJob.username)}`);
-          const data = await res.json();
-          if (data.status) {
-            setActiveJob(prev => ({ ...prev, ...data }));
-            if (['finished', 'error'].includes(data.status)) loadData();
+    if (!isAuthenticated) return;
+    let cancelled = false;
+    let lastStatus = null;
+
+    const tick = async () => {
+      try {
+        const res = await fetch(`${API_URL}/scans/active`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (cancelled) return;
+
+        if (data.active) {
+          setActiveScan(data.job);
+          setRecentScan(null);
+          lastStatus = 'running';
+        } else {
+          setActiveScan(null);
+          setRecentScan(data.recent || null);
+          // Wenn gerade von "running" zu fertig gewechselt -> Lead-Liste neu laden
+          if (lastStatus === 'running' && data.recent) {
+            loadData();
+            lastStatus = data.recent.status;
           }
-        } catch (e) {}
-      }, 1000);
-    }
-    return () => clearInterval(interval);
-  }, [activeJob]);
+        }
+      } catch (e) { /* Netzwerkfehler ignorieren, naechster Tick */ }
+    };
+
+    tick();
+    const interval = setInterval(tick, 2000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [isAuthenticated]);
+
+  const stopActiveScan = async (jobId) => {
+    try {
+      await fetch(`${API_URL}/scans/${jobId}/stop`, { method: 'POST' });
+    } catch (e) { /* nichts - der naechste Tick zeigt das Ergebnis */ }
+  };
 
   const handleAddTarget = async () => {
     if (!newTarget) return;
-    setActiveJob({ username: newTarget, status: 'running', message: 'Startet...' });
-    await fetch(`${API_URL}/add-target`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ username: newTarget })});
+    const res = await fetch(`${API_URL}/add-target`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ username: newTarget })
+    });
+    if (res.status === 409) {
+      alert('Es laeuft bereits ein Scan. Bitte erst stoppen oder warten.');
+      return;
+    }
     setNewTarget("");
+    // ScanBanner zeigt den Job automatisch beim naechsten Tick.
   };
 
   const handleManualAdd = async () => {
@@ -156,10 +276,16 @@ export default function App() {
     if (usersToScan.length === 0) return;
     const usernames = usersToScan.map(u => u.username);
     setLoading(true);
-    const res = await fetch(`${API_URL}/analyze-german`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ usernames })});
-    const data = await res.json();
-    if (data.job_id) setActiveJob({ username: data.job_id, status: 'running', message: 'Scan läuft...' });
+    const res = await fetch(`${API_URL}/analyze-german`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ usernames })
+    });
     setLoading(false);
+    if (res.status === 409) {
+      alert('Es laeuft bereits ein Scan. Bitte erst stoppen oder warten.');
+      return;
+    }
+    // ScanBanner zeigt den Job automatisch beim naechsten Tick (~ 2 Sek).
   };
 
   const handleDeleteSelected = async () => {
@@ -304,16 +430,8 @@ export default function App() {
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800 font-sans">
       {!appReady && <Preloader />}
-      
-      {activeJob && !['finished', 'error'].includes(activeJob.status) && (
-          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[100] flex items-center justify-center p-6 text-center animate-in fade-in duration-300">
-              <div className="bg-white p-8 rounded-xl shadow-2xl max-w-sm w-full space-y-4">
-                  <Loader2 className="mx-auto animate-spin text-purple-600" size={40} />
-                  <h2 className="text-xl font-bold">Analyse läuft...</h2>
-                  <p className="text-slate-500 text-sm font-medium">{activeJob.message}</p>
-              </div>
-          </div>
-      )}
+
+      <ScanBanner scan={activeScan} recent={recentScan} onStop={stopActiveScan} />
 
       <nav className="bg-white border-b border-slate-200 sticky top-0 z-30 px-4 md:px-6 py-4 flex flex-col xl:flex-row items-center justify-between shadow-sm gap-4">
         <div className="flex items-center gap-2">
