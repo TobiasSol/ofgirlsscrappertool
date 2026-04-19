@@ -740,6 +740,27 @@ def scrape_target_logic(target_username, job_id):
             cl = Client(token=API_KEY)
             t_info = cl.user_by_username_v1(target_username)
             t_id = t_info.get('pk')
+
+            # Gesamtzahl der Followings vorab holen, damit Progress-Bar/Prozente/ETA
+            # korrekt angezeigt werden. HikerAPI nennt das je nach Version
+            # 'following_count' (snake_case) oder 'followingCount' (camelCase).
+            total_followings = (
+                t_info.get('following_count')
+                or t_info.get('followingCount')
+                or 0
+            )
+            try:
+                job = db.session.get(ScanJob, job_id)
+                if job:
+                    job.total = int(total_followings) if total_followings else 0
+                    job.current_message = (
+                        f"Lade {total_followings} Followings..."
+                        if total_followings else f"Lade Followings von {target_username}..."
+                    )
+                    db.session.commit()
+            except Exception:
+                db.session.rollback()
+
             end_cursor = None
             processed = 0
             found = 0
