@@ -349,20 +349,48 @@ def is_german_text(text):
     return False, ""
 
 def analyze_with_ai(text=None, image_url=None):
+    """Fragt OpenAI ob der User DACH ist. Liefert (is_de, kurz_tag).
+    kurz_tag ist absichtlich auf 1-2 Woerter limitiert, damit das in der UI
+    in eine Zeile passt (z.B. 'Hashtags', 'Bio', 'Ort', 'Slang').
+    """
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key: return None, "Kein Key"
     try:
         headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+        prompt_rules = (
+            "Antworte AUSSCHLIESSLICH im Format 'JA:<tag>' oder 'NEIN:<tag>'. "
+            "<tag> ist EIN Wort, max 15 Zeichen, kein Satz. "
+            "Beispiele: JA:Bio, JA:Hashtag, JA:Ort, JA:Slang, NEIN:Englisch, NEIN:Spanisch."
+        )
         if image_url:
-            payload = {"model": "gpt-4o-mini", "messages": [{"role": "user", "content": [{"type": "text", "text": "Antworte NUR mit 'JA: Grund' oder 'NEIN: Grund'. Ist auf diesem Bild DEUTSCHER Text?"}, {"type": "image_url", "image_url": {"url": image_url}}]}], "max_tokens": 50}
+            payload = {
+                "model": "gpt-4o-mini",
+                "messages": [{"role": "user", "content": [
+                    {"type": "text", "text": f"Ist auf diesem Bild deutscher Text/DACH-Bezug? {prompt_rules}"},
+                    {"type": "image_url", "image_url": {"url": image_url}},
+                ]}],
+                "max_tokens": 15,
+            }
         else:
-            payload = {"model": "gpt-4o-mini", "messages": [{"role": "system", "content": "Experte für DACH-Erkennung. Antworte 'JA: Grund' oder 'NEIN: Grund'."}, {"role": "user", "content": f"Ist dieser Instagram-User aus DACH? Kontext:\n{text}"}], "max_tokens": 100}
-        res = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload, timeout=15)
+            payload = {
+                "model": "gpt-4o-mini",
+                "messages": [
+                    {"role": "system", "content": f"Du erkennst DACH-User auf Instagram. {prompt_rules}"},
+                    {"role": "user", "content": f"Kontext:\n{text}"},
+                ],
+                "max_tokens": 15,
+            }
+        res = requests.post("https://api.openai.com/v1/chat/completions",
+                            headers=headers, json=payload, timeout=15)
         ans = res.json()['choices'][0]['message']['content'].strip()
         is_de = ans.upper().startswith("JA")
-        reason = ans.split(":", 1)[1].strip() if ":" in ans else ans
-        return is_de, reason
-    except: return None, "Fehler"
+        tag = ans.split(":", 1)[1].strip() if ":" in ans else ans
+        # Hard-Cap: nur erstes Wort, max 20 Zeichen
+        tag = tag.split()[0] if tag.split() else tag
+        tag = tag[:20].strip(".,;:!?-_")
+        return is_de, tag or ("DE" if is_de else "kein DE")
+    except Exception:
+        return None, "Fehler"
 
 def analyze_german_deep(cl, username, update_fn=None):
     try:
@@ -373,7 +401,7 @@ def analyze_german_deep(cl, username, update_fn=None):
         bio = details.get('biography', '')
         full_name = details.get('full_name', '')
         is_de, reason = is_german_text(f"{full_name} {bio}")
-        if is_de: return True, f"Sofort: {reason}"
+        if is_de: return True, f"✓ DE ({reason})"
         all_captions = []
         image_urls = []
         community_comments = []
@@ -401,12 +429,12 @@ def analyze_german_deep(cl, username, update_fn=None):
                         except: pass
         context = f"BIO: {bio} | NAME: {full_name} | COMMS: {' | '.join(community_comments[:15])} | CAPS: {' | '.join(all_captions[:5])}"
         is_de_ai, ai_reason = analyze_with_ai(text=context)
-        if is_de_ai: return True, f"KI (Text): {ai_reason}"
+        if is_de_ai: return True, f"✓ DE KI ({ai_reason})"
         if image_urls:
             for idx, img_url in enumerate(image_urls[:5]):
                 is_de_vis, vis_reason = analyze_with_ai(image_url=img_url)
-                if is_de_vis: return True, f"Vision: {vis_reason}"
-        return False, f"Nicht erkannt (KI: {ai_reason})"
+                if is_de_vis: return True, f"✓ DE Bild ({vis_reason})"
+        return False, "✗ kein DE"
     except Exception as e: return False, f"Crash: {str(e)}"
 
 @app.route('/health', methods=['GET'])
