@@ -14,3 +14,8 @@ src/*.egg-info/
 # Node Müll ignorieren
 node_modules/
 dist/
+
+# Lead-Daten / Backups (DSGVO + Repo-Groesse)
+export_temp.json
+backup_*.json
+src/data/users.json
