@@ -1,0 +1,41 @@
+# Render Blueprint - Deployment-Konfiguration als Code.
+# Doku: https://render.com/docs/blueprint-spec
+#
+# Wenn du dieses Repo via "New > Blueprint" in Render anlegst, baut Render
+# automatisch alles auf Basis dieser Datei.
+
+services:
+  - type: web
+    name: ofscrappertool
+    runtime: python
+    region: frankfurt          # naheliegend zur Neon-DB in Frankfurt
+    plan: starter              # 7 USD/Monat, always-on, kein Cold-Start
+    branch: main
+    autoDeploy: true           # Push auf main -> Auto-Deploy
+    healthCheckPath: /health
+
+    # Build: Python-Deps via pyproject.toml + Frontend via Vite bauen
+    buildCommand: |
+      pip install --upgrade pip &&
+      pip install -e . &&
+      npm install &&
+      npm run build
+
+    # Start: gunicorn mit dem dynamischen $PORT von Render binden
+    startCommand: gunicorn --bind 0.0.0.0:$PORT --workers 2 --timeout 120 main:app
+
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+      - key: NODE_VERSION
+        value: "20.11.0"
+      # Folgende vier Secrets traegst du EINMAL im Render-Dashboard ein
+      # (sync: false bedeutet: nicht aus dem Repo lesen, manuell setzen).
+      - key: NEON_DATABASE_URL
+        sync: false
+      - key: HIKERAPI_TOKEN
+        sync: false
+      - key: APP_PASSWORD
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
