@@ -28,38 +28,50 @@ try:
 except ImportError:
     detect = None
 
-# Env laden
+# Env laden (sucht .env auch im Projekt-Root, falls Backend von woanders gestartet wird)
 load_dotenv()
+load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
 
 # --- KONFIGURATION ---
-API_KEY = os.environ.get("HIKERAPI_TOKEN", "y0a9buus1f3z0vx3gqodr8lh11vvsxyh")
-APP_PASSWORD = os.environ.get("APP_PASSWORD", "Tobideno85!")
+API_KEY = os.environ.get("HIKERAPI_TOKEN")
+APP_PASSWORD = os.environ.get("APP_PASSWORD")
+
+# Pflicht-Variablen pruefen, sonst frueh und klar abbrechen
+_missing_env = [name for name, val in [("HIKERAPI_TOKEN", API_KEY), ("APP_PASSWORD", APP_PASSWORD)] if not val]
+if _missing_env:
+    print(f"❌ FEHLER: Pflicht-Umgebungsvariablen fehlen in .env: {', '.join(_missing_env)}")
+    print("   Lege die Werte in der .env-Datei im Projekt-Root an (siehe .env.example).")
+    sys.exit(1)
 
 # Flask App Setup
 app = Flask(__name__, static_folder='../dist', static_url_path='')
 CORS(app)
 
+# Erhöhe maximales Upload-Limit auf 50MB (für große Backups)
+app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024 
+
 # --- DATENBANK KONFIGURATION ---
-if sys.platform == "win32":
-    db_path = os.path.join(os.getcwd(), 'lokal.db')
-    app.config['SQLALCHEMY_DATABASE_URI'] = f"sqlite:///{db_path}"
-    print(f"--- 🖥️ LOKAL-MODUS: Nutze {db_path} ---")
-else:
-    app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get("DATABASE_URL")
+# Variante A: Lokal & Online nutzen IMMER dieselbe Cloud-DB (DATABASE_URL aus .env).
+# So gibt es nur eine Wahrheit, kein JSON-Hin-und-Her zwischen Umgebungen.
+DATABASE_URL = os.environ.get("DATABASE_URL")
+if not DATABASE_URL:
+    print("❌ FEHLER: DATABASE_URL fehlt in .env – ohne Cloud-DB kann der Server nicht starten.")
+    print("   Trage deine Postgres-URL (z.B. von Neon) in die .env ein.")
+    sys.exit(1)
 
+# Heroku/Render/Neon liefern manchmal noch das alte 'postgres://'-Schema – SQLAlchemy braucht 'postgresql://'.
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
+app.config['SQLALCHEMY_DATABASE_URI'] = DATABASE_URL
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-
-if app.config['SQLALCHEMY_DATABASE_URI'] and app.config['SQLALCHEMY_DATABASE_URI'].startswith('sqlite'):
-    app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
-        "pool_pre_ping": True,
-        "pool_recycle": 300,
-        "connect_args": {"check_same_thread": False}
-    }
-else:
-    app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
-        "pool_pre_ping": True,
-        "pool_recycle": 300,
-    }
+app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+    "pool_pre_ping": True,    # tote Connections automatisch erkennen (wichtig fuer Neon-Sleep)
+    "pool_recycle": 300,      # nach 5min Connection neu aufbauen
+    "pool_size": 5,
+    "max_overflow": 10,
+}
+print(f"--- ☁️  CLOUD-MODUS: verbunden mit {DATABASE_URL.split('@')[-1].split('/')[0]} ---")
 
 class Base(DeclarativeBase):
   pass
@@ -245,6 +257,24 @@ def analyze_german_deep(cl, username, update_fn=None):
         return False, f"Nicht erkannt (KI: {ai_reason})"
     except Exception as e: return False, f"Crash: {str(e)}"
 
+@app.route('/health', methods=['GET'])
+@app.route('/api/health', methods=['GET'])
+def health():
+    """Healthcheck fuer Replit/Cloud Run Deployment (siehe .replit)."""
+    try:
+        db.session.execute(text("SELECT 1"))
+        return jsonify({"status": "ok", "db": "connected"}), 200
+    except Exception as e:
+        return jsonify({"status": "degraded", "db": "error", "details": str(e)}), 503
+
+@app.route('/api/login', methods=['POST'])
+def login():
+    """Prueft das Passwort serverseitig - Frontend hat keinen Klartext-Zugriff."""
+    pw = (request.json or {}).get('password', '')
+    if pw == APP_PASSWORD:
+        return jsonify({"success": True})
+    return jsonify({"success": False, "error": "Falsches Passwort"}), 401
+
 @app.route('/api/users', methods=['GET'])
 def get_users():
     leads = Lead.query.all()
@@ -291,25 +321,33 @@ def analyze_german():
 
 @app.route('/api/import', methods=['POST'])
 def import_data():
-    """Importiert ein Backup via Datei-Upload."""
+    """Importiert ein Backup via Datei-Upload mit High-Performance Optimierung."""
     if 'file' not in request.files:
         return jsonify({"error": "Keine Datei gefunden"}), 400
     file = request.files['file']
     try:
+        print("📥 IMPORT: Lese Datei...")
         data = json.load(file)
         leads = data.get('leads', [])
         targets = data.get('targets', [])
         
-        # 1. Targets
+        # 1. Targets importieren (geringe Anzahl, daher einfach)
         for t in targets:
             if not Target.query.filter_by(username=t['username']).first():
                 db.session.add(Target(username=t['username'], last_scraped=t.get('lastScraped')))
         
-        # 2. Leads
+        # 2. Leads importieren (HIGH PERFORMANCE)
+        # Hole alle existierenden PKs in einem Rutsch, um 37.000 einzelne Abfragen zu vermeiden
+        print("📥 IMPORT: Prüfe existierende Datensätze...")
+        existing_pks = {row[0] for row in db.session.query(Lead.pk).all()}
+        
         added = 0
-        for l in leads:
+        batch_size = 1000
+        
+        print(f"📥 IMPORT: Verarbeite {len(leads)} potenzielle Leads...")
+        for i, l in enumerate(leads):
             pk = l.get('pk')
-            if pk and not db.session.get(Lead, pk):
+            if pk and pk not in existing_pks:
                 new_lead = Lead(
                     pk=pk, username=l.get('username'), full_name=l.get('fullName'),
                     bio=l.get('bio'), email=l.get('email'), is_private=l.get('isPrivate', False),
@@ -322,12 +360,20 @@ def import_data():
                 )
                 db.session.add(new_lead)
                 added += 1
+                existing_pks.add(pk) # Verhindere Duplikate innerhalb der Datei
+            
+            # Zwischen-Commit alle 1000 Zeilen, um den Speicher zu schonen
+            if added > 0 and added % batch_size == 0:
+                db.session.flush()
         
         db.session.commit()
+        print(f"✅ IMPORT ERFOLGREICH: {added} User hinzugefügt.")
         return jsonify({"success": True, "added": added})
     except Exception as e:
         db.session.rollback()
         print(f"❌ IMPORT FEHLER: {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/export', methods=['GET'])

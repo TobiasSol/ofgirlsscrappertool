@@ -1,13 +1,20 @@
 #!/bin/bash
+# Replit-Workspace-Start (nicht fuer Production!).
+# Production laeuft per .replit > [deployment] mit gunicorn.
+#
+# Voraussetzungen (einmalig in Replit-Secrets eintragen):
+#   DATABASE_URL    - Neon-Connection-String
+#   APP_PASSWORD    - Login-Passwort
+#   HIKERAPI_TOKEN  - HikerAPI-Token
+#   OPENAI_API_KEY  - (optional) fuer KI-DACH-Analyse
 
-# Backend starten (Hintergrund)
-cd backend
-pip install flask flask-cors hikerapi
-python server.py &
+set -e
 
-# Zurück ins Root (wo jetzt das Frontend liegt)
-cd ..
+# Dependencies nur installieren wenn noetig
+if [ ! -d "node_modules" ]; then
+    echo "📦 Installiere Frontend-Dependencies..."
+    npm install
+fi
 
-# Frontend starten
-npm install
-npm run dev
+# Frontend + Backend parallel starten (siehe package.json > scripts.start)
+npm run start

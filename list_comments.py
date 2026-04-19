@@ -9,7 +9,9 @@ if sys.platform == "win32":
     sys.stdout.reconfigure(encoding='utf-8')
 
 load_dotenv()
-API_KEY = os.environ.get("HIKERAPI_TOKEN", "y0a9buus1f3z0vx3gqodr8lh11vvsxyh")
+API_KEY = os.environ.get("HIKERAPI_TOKEN")
+if not API_KEY:
+    sys.exit("❌ HIKERAPI_TOKEN fehlt in .env")
 username = "chrissi.moves"
 
 def list_all_comments():

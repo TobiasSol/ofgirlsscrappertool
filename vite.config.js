@@ -12,6 +12,8 @@ export default defineConfig({
         target: 'http://127.0.0.1:8000', // Wieder auf Port 8000 (Standard)
         changeOrigin: true,
         secure: false,
+        timeout: 600000, // 10 Minuten Timeout für große Uploads
+        proxyTimeout: 600000
       }
     }
   }

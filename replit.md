@@ -56,7 +56,7 @@ Preferred communication style: Simple, everyday language.
 
 **HikerAPI Integration:** Third-party Instagram scraping service accessed via the `hikerapi` Python client library.
 
-**API Key Management:** Hardcoded API key (`y0a9buus1f3z0vx3gqodr8lh11vvsxyh`) for HikerAPI authentication. This should be moved to environment variables for production security.
+**API Key Management:** API key for HikerAPI is loaded from the `HIKERAPI_TOKEN` environment variable (via `.env`). The application aborts on startup if the variable is missing.
 
 **Instagram Data Access:**
 - `user_following_chunk_gql`: GraphQL-based pagination method for retrieving follower lists

@@ -6,7 +6,6 @@ import {
 
 const API_URL = "/api"; 
 
-// --- HELPER ---
 const formatDate = (isoString) => {
   if (!isoString) return "-";
   try {
@@ -42,13 +41,16 @@ const Preloader = () => (
     </div>
 );
 
+const IS_LOCAL = typeof window !== 'undefined' && ['localhost', '127.0.0.1', '::1'].includes(window.location.hostname);
+
 export default function App() {
-  const [isAuthenticated, setIsAuthenticated] = useState(() => localStorage.getItem('insta_auth') === 'true');
+  const [isAuthenticated, setIsAuthenticated] = useState(() => IS_LOCAL || localStorage.getItem('insta_auth') === 'true');
   const [password, setPassword] = useState("");
   const [loginError, setLoginError] = useState(false);
   const [appReady, setAppReady] = useState(false); 
   
   useEffect(() => {
+      if (IS_LOCAL) { setIsAuthenticated(true); setAppReady(true); return; }
       const loggedIn = localStorage.getItem('isLoggedIn') === 'true';
       if (loggedIn) setIsAuthenticated(true);
       setAppReady(true);
@@ -134,72 +136,6 @@ export default function App() {
     return () => clearInterval(interval);
   }, [activeJob]);
 
-  const processedUsers = useMemo(() => {
-    let filtered = [...users];
-    switch (activeTab) {
-        case 'review': 
-        case 'unfiltered': filtered = filtered.filter(u => ['new', 'active', 'changed', 'contacted', 'not_found'].includes(u.status)); break;
-        case 'dach': filtered = filtered.filter(u => u.isGerman); break;
-        case 'favorites': filtered = filtered.filter(u => u.status === 'favorite'); break;
-        case 'eng': filtered = filtered.filter(u => u.status === 'eng'); break;
-        case 'hidden': filtered = filtered.filter(u => u.status === 'hidden'); break;
-        case 'blocked': filtered = filtered.filter(u => u.status === 'blocked'); break;
-        case 'email': 
-            filtered = filtered.filter(u => u.email && u.status !== 'blocked' && u.status !== 'hidden'); 
-            if (hideEnglishInEmail) filtered = filtered.filter(u => u.status !== 'eng');
-            break;
-        case 'export': filtered = selectedUsers.length > 0 ? filtered.filter(u => selectedUsers.includes(u.pk)) : []; break;
-    }
-    if (activeTab === 'unfiltered') {
-        if (dachFilter === 'de') filtered = filtered.filter(u => u.isGerman == true);
-        else if (dachFilter === 'no_de') filtered = filtered.filter(u => u.isGerman == false && u.isGerman !== null);
-        else if (dachFilter === 'unscanned') filtered = filtered.filter(u => u.isGerman === null);
-    }
-    if (filterText) {
-        const l = filterText.toLowerCase();
-        filtered = filtered.filter(u => (u.username||'').toLowerCase().includes(l) || (u.bio||'').toLowerCase().includes(l));
-    }
-    return filtered.sort((a, b) => {
-        if (activeTab === 'unfiltered' && sortConfig.key === 'foundDate' && a.isGerman !== b.isGerman) return a.isGerman ? -1 : 1;
-        let aV = a[sortConfig.key] || ""; let bV = b[sortConfig.key] || "";
-        if (typeof aV === 'string') { aV = aV.toLowerCase(); bV = bV.toLowerCase(); }
-        return aV < bV ? (sortConfig.direction === 'asc' ? -1 : 1) : (sortConfig.direction === 'asc' ? 1 : -1);
-    });
-  }, [users, activeTab, filterText, sortConfig, selectedUsers, dachFilter, hideEnglishInEmail]);
-
-  const paginatedUsers = useMemo(() => processedUsers.slice((currentPage - 1) * pageSize, currentPage * pageSize), [processedUsers, currentPage, pageSize]);
-  const totalPages = Math.ceil(processedUsers.length / pageSize);
-  useEffect(() => { setCurrentPage(1); }, [activeTab, filterText, dachFilter, pageSize]);
-
-  const toggleSelectAll = () => {
-    const allOnPageSelected = paginatedUsers.every(u => selectedUsers.includes(u.pk));
-    const pagePks = paginatedUsers.map(u => u.pk);
-    if (allOnPageSelected) setSelectedUsers(prev => prev.filter(pk => !pagePks.includes(pk)));
-    else setSelectedUsers(prev => [...new Set([...prev, ...pagePks])]);
-  };
-
-  const toggleSelectUser = (pk) => {
-    if (selectedUsers.includes(pk)) setSelectedUsers(selectedUsers.filter(id => id !== pk));
-    else setSelectedUsers([...selectedUsers, pk]);
-  };
-
-  const handleStatusChange = async (pk, newStatus) => {
-    setUsers(prev => prev.map(u => u.pk === pk ? {...u, status: newStatus} : u));
-    await fetch(`${API_URL}/lead/update-status`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ pk, status: newStatus })});
-  };
-
-  const requestSort = (key) => {
-    let direction = 'asc';
-    if (sortConfig.key === key && sortConfig.direction === 'asc') direction = 'desc';
-    setSortConfig({ key, direction });
-  };
-
-  const ResizeHandle = ({ id }) => (
-    <div className="absolute right-0 top-0 bottom-0 w-2 cursor-col-resize hover:bg-purple-400 z-10 opacity-0 hover:opacity-100" onMouseDown={(e) => startResize(e, id)}>
-        <div className="w-[1px] h-full bg-purple-500 mx-auto"></div>
-    </div>
-  );
-
   const handleAddTarget = async () => {
     if (!newTarget) return;
     setActiveJob({ username: newTarget, status: 'running', message: 'Startet...' });
@@ -233,11 +169,130 @@ export default function App() {
     loadData();
   };
 
+  const handleStatusChange = async (pk, newStatus) => {
+    setUsers(prev => prev.map(u => u.pk === pk ? {...u, status: newStatus} : u));
+    await fetch(`${API_URL}/lead/update-status`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ pk, status: newStatus })});
+  };
+
+  const handleExportEmails = () => {
+    const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
+    const allEmails = [];
+
+    processedUsers.forEach(u => {
+      // Suche im E-Mail-Feld
+      const foundInEmail = (u.email || "").match(emailRegex);
+      if (foundInEmail) allEmails.push(...foundInEmail);
+
+      // Falls dort nichts war, suche sicherheitshalber auch in der Bio
+      if (!foundInEmail) {
+        const foundInBio = (u.bio || "").match(emailRegex);
+        if (foundInBio) allEmails.push(...foundInBio);
+      }
+    });
+
+    // Dubletten entfernen und säubern
+    const uniqueEmails = [...new Set(allEmails.map(e => e.toLowerCase().trim()))].join('\n');
+    
+    if (!uniqueEmails) {
+        alert("Keine gültigen E-Mail-Adressen zum Exportieren gefunden.");
+        return;
+    }
+
+    const blob = new Blob([uniqueEmails], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `nur_emails_${new Date().toISOString().split('T')[0]}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const requestSort = (key) => {
+    let direction = 'asc';
+    if (sortConfig.key === key && sortConfig.direction === 'asc') direction = 'desc';
+    setSortConfig({ key, direction });
+  };
+
+  const processedUsers = useMemo(() => {
+    let filtered = [...users];
+    switch (activeTab) {
+        case 'review': 
+        case 'unfiltered': filtered = filtered.filter(u => ['new', 'active', 'changed', 'contacted', 'not_found'].includes(u.status)); break;
+        case 'dach': filtered = filtered.filter(u => u.isGerman); break;
+        case 'favorites': filtered = filtered.filter(u => u.status === 'favorite'); break;
+        case 'eng': filtered = filtered.filter(u => u.status === 'eng'); break;
+        case 'hidden': filtered = filtered.filter(u => u.status === 'hidden'); break;
+        case 'blocked': filtered = filtered.filter(u => u.status === 'blocked'); break;
+        case 'email': 
+            filtered = filtered.filter(u => u.email && u.status !== 'blocked' && u.status !== 'hidden'); 
+            break;
+        case 'export': filtered = selectedUsers.length > 0 ? filtered.filter(u => selectedUsers.includes(u.pk)) : []; break;
+    }
+    if (activeTab === 'unfiltered') {
+        if (dachFilter === 'de') filtered = filtered.filter(u => u.isGerman === true);
+        else if (dachFilter === 'no_de') filtered = filtered.filter(u => u.isGerman === false);
+        else if (dachFilter === 'unscanned') filtered = filtered.filter(u => u.isGerman === null);
+    }
+    if (filterText) {
+        const l = filterText.toLowerCase();
+        filtered = filtered.filter(u => (u.username||'').toLowerCase().includes(l) || (u.bio||'').toLowerCase().includes(l));
+    }
+    return filtered.sort((a, b) => {
+        if (activeTab === 'unfiltered' && sortConfig.key === 'foundDate' && a.isGerman !== b.isGerman) return a.isGerman ? -1 : 1;
+        let aV = a[sortConfig.key] || ""; let bV = b[sortConfig.key] || "";
+        if (typeof aV === 'string') { aV = aV.toLowerCase(); bV = bV.toLowerCase(); }
+        return aV < bV ? (sortConfig.direction === 'asc' ? -1 : 1) : (sortConfig.direction === 'asc' ? 1 : -1);
+    });
+  }, [users, activeTab, filterText, sortConfig, selectedUsers, dachFilter]);
+
+  const paginatedUsers = useMemo(() => processedUsers.slice((currentPage - 1) * pageSize, currentPage * pageSize), [processedUsers, currentPage, pageSize]);
+  const totalPages = Math.ceil(processedUsers.length / pageSize);
+  useEffect(() => { setCurrentPage(1); }, [activeTab, filterText, dachFilter, pageSize]);
+
+  const toggleSelectAll = () => {
+    const allOnPageSelected = paginatedUsers.every(u => selectedUsers.includes(u.pk));
+    const pagePks = paginatedUsers.map(u => u.pk);
+    if (allOnPageSelected) setSelectedUsers(prev => prev.filter(pk => !pagePks.includes(pk)));
+    else setSelectedUsers(prev => [...new Set([...prev, ...pagePks])]);
+  };
+
+  const toggleSelectUser = (pk) => {
+    if (selectedUsers.includes(pk)) setSelectedUsers(selectedUsers.filter(id => id !== pk));
+    else setSelectedUsers([...selectedUsers, pk]);
+  };
+
+  const ResizeHandle = ({ id }) => (
+    <div className="absolute right-0 top-0 bottom-0 w-2 cursor-col-resize hover:bg-purple-400 z-10 opacity-0 hover:opacity-100" onMouseDown={(e) => startResize(e, id)}>
+        <div className="w-[1px] h-full bg-purple-500 mx-auto"></div>
+    </div>
+  );
+
   if (!isAuthenticated) return (
     <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
       <div className="bg-white p-8 rounded-2xl shadow-2xl w-full max-w-md">
         <h2 className="text-2xl font-bold text-center mb-6">InstaMonitor Pro Login</h2>
-        <form onSubmit={(e) => { e.preventDefault(); if(password === "Tobideno85!") { setIsAuthenticated(true); localStorage.setItem('insta_auth', 'true'); loadData(); } else setLoginError(true); }} className="space-y-4">
+        <form onSubmit={async (e) => {
+          e.preventDefault();
+          setLoginError(false);
+          try {
+            const res = await fetch(`${API_URL}/login`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ password })
+            });
+            if (res.ok) {
+              setIsAuthenticated(true);
+              localStorage.setItem('insta_auth', 'true');
+              loadData();
+            } else {
+              setLoginError(true);
+            }
+          } catch (err) {
+            setLoginError(true);
+          }
+        }} className="space-y-4">
           <input type="password" title="Passwort" className="w-full px-4 py-3 border rounded-lg" placeholder="Passwort" value={password} onChange={e => setPassword(e.target.value)} autoFocus />
           {loginError && <p className="text-red-500 text-xs text-center mt-2 font-bold">Falsches Passwort</p>}
           <button className="w-full bg-purple-600 text-white font-bold py-3 rounded-lg hover:bg-purple-700 transition-all">Login</button>
@@ -311,64 +366,52 @@ export default function App() {
                     <div className="space-y-4">
                         <h3 className="font-bold text-slate-600">Datenbank Backup</h3>
                         <button onClick={() => window.location.href = `${API_URL}/export`} className="w-full bg-blue-600 text-white py-3 rounded-lg font-bold flex items-center justify-center gap-2"><Download size={18}/> Download JSON</button>
-                        <label className="w-full border-2 border-dashed p-8 rounded-lg flex flex-col items-center gap-2 cursor-pointer hover:bg-slate-50 transition-all">
+                        <label className="w-full border-2 border-dashed p-8 rounded-xl flex flex-col items-center gap-2 cursor-pointer hover:bg-slate-50 transition-all">
                             <Upload size={24}/> <span>JSON wiederherstellen</span>
                             <input type="file" accept=".json" className="hidden" onChange={async (e) => { const f = e.target.files[0]; if(!f) return; const fd = new FormData(); fd.append('file', f); await fetch(`${API_URL}/import`, {method: 'POST', body: fd}); loadData(); }} />
                         </label>
                     </div>
                 </div>
             </div>
-        ) : activeTab === 'review' ? (
-            <div className="flex flex-col items-center justify-center min-h-[50vh] bg-white rounded-xl p-8 border animate-in fade-in">
-                {processedUsers[0] ? (
-                    <div className="text-center space-y-6 max-w-sm">
-                        <div className="w-24 h-24 rounded-full bg-slate-100 mx-auto flex items-center justify-center text-3xl font-bold">{processedUsers[0].username[0].toUpperCase()}</div>
-                        <h2 className="text-3xl font-bold">{processedUsers[0].username}</h2>
-                        <div className="flex justify-center gap-4">
-                            <button onClick={() => handleStatusChange(processedUsers[0].pk, 'favorite')} className="bg-yellow-100 text-yellow-600 p-4 rounded-2xl hover:bg-yellow-200 transition-all"><Heart size={32}/></button>
-                            <button onClick={() => handleStatusChange(processedUsers[0].pk, 'blocked')} className="bg-red-100 text-red-600 p-4 rounded-2xl hover:bg-red-200 transition-all"><Ban size={32}/></button>
-                        </div>
-                        <p className="text-slate-600 italic whitespace-pre-wrap">{processedUsers[0].bio}</p>
-                    </div>
-                ) : <p className="font-bold text-slate-400 text-xl">Keine User im Review 🎉</p>}
-            </div>
         ) : (
             <>
-            <div className="sticky top-[130px] xl:top-[73px] z-20 flex flex-col md:flex-row justify-between items-center bg-white/90 backdrop-blur-md p-3 rounded-xl shadow-sm border border-slate-200 gap-3 mb-6 transition-all">
-                <div className="flex flex-wrap items-center gap-3 w-full md:w-auto">
-                    <div className="relative w-full sm:w-72">
-                        <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                        <input type="text" placeholder="Suchen..." className="w-full pl-10 pr-4 py-2 bg-slate-50 border rounded-lg outline-none focus:border-purple-500 transition-all" value={filterText} onChange={(e) => setFilterText(e.target.value)} />
-                    </div>
+            <div className="sticky top-[73px] z-20 flex flex-col md:flex-row justify-between items-center bg-white/90 backdrop-blur-md p-3 rounded-xl shadow-sm border border-slate-200 gap-3 mb-6">
+                <div className="flex flex-wrap items-center justify-center md:justify-start gap-3 w-full md:w-auto">
+                    <div className="relative w-full sm:w-64 md:w-72"><Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" /><input type="text" placeholder="Suchen..." className="w-full pl-10 pr-4 py-2 bg-slate-50 border rounded-xl outline-none focus:border-purple-500" value={filterText} onChange={(e) => setFilterText(e.target.value)} /></div>
                     <button onClick={handleDachScan} className="bg-orange-50 text-orange-600 border border-orange-200 px-4 py-2 rounded-lg font-bold flex items-center gap-2 hover:bg-orange-100 transition-all"><Globe size={16}/> {selectedUsers.length > 0 ? `${selectedUsers.length} Scannen` : "Alle Scannen"}</button>
                     <div className="flex bg-slate-100 p-1 rounded-lg gap-1 border">
-                        {['all', 'de', 'no_de', 'unscanned'].map(f => <button key={f} onClick={() => setDachFilter(f)} className={`px-3 py-1 rounded-md text-[10px] font-black tracking-tighter ${dachFilter === f ? 'bg-white text-purple-600 shadow-sm' : 'text-slate-500'}`}>{f === 'all' ? 'ALLE' : f === 'de' ? 'DE 🇩🇪' : f === 'no_de' ? 'NO DE ✘' : 'SCAN ⏳'}</button>)}
+                        {['all', 'de', 'no_de', 'unscanned'].map(f => <button key={f} onClick={() => setDachFilter(f)} className={`px-3 py-1 rounded-md text-xs font-bold ${dachFilter === f ? 'bg-white text-purple-600 shadow-sm' : 'text-slate-500'}`}>{f.toUpperCase()}</button>)}
                     </div>
                 </div>
                 <div className="flex items-center gap-3 w-full md:w-auto justify-between">
+                    <div className="text-[10px] font-black text-slate-400 bg-slate-100 px-2 py-1 rounded-full uppercase tracking-tighter">{processedUsers.length} User</div>
+                    
+                    {activeTab === 'email' && (
+                        <button 
+                            onClick={handleExportEmails}
+                            className="bg-blue-600 text-white px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-2 hover:bg-blue-700 transition-all shadow-sm"
+                        >
+                            <Download size={14}/> Emails (.txt)
+                        </button>
+                    )}
+
                     <div className="flex bg-slate-50 p-1 rounded-lg border">
-                        <span className="text-[10px] font-bold text-slate-400 px-2 flex items-center">SHOW:</span>
                         {[10, 20, 50, 100].map(s => <button key={s} onClick={() => setPageSize(s)} className={`px-2 py-1 rounded-md text-xs font-bold ${pageSize === s ? 'bg-white text-purple-600 shadow-sm' : 'text-slate-400'}`}>{s}</button>)}
                     </div>
-                    {selectedUsers.length > 0 && (
-                        <div className="flex gap-1 animate-in zoom-in-95">
-                            <button onClick={() => setSelectedUsers(processedUsers.map(u => u.pk))} className="text-[10px] bg-white text-slate-700 px-2 py-1 rounded border border-slate-300 font-bold hover:bg-slate-50">Alle ({processedUsers.length})</button>
-                            <button onClick={handleDeleteSelected} className="bg-red-600 text-white p-2 rounded-lg hover:bg-red-700 shadow-lg shadow-red-100"><Trash2 size={16}/></button>
-                        </div>
-                    )}
+                    {selectedUsers.length > 0 && <button onClick={handleDeleteSelected} className="bg-red-600 text-white p-2 rounded-lg hover:bg-red-700 shadow-lg shadow-red-100"><Trash2 size={16}/></button>}
                 </div>
             </div>
 
             <div className="bg-white rounded-xl border border-slate-200 overflow-x-auto relative">
                 <table className="w-full text-left table-fixed">
-                    <thead className="bg-slate-50 text-slate-500 font-bold border-b text-[10px] uppercase tracking-widest">
+                    <thead className="bg-slate-50 text-slate-500 font-bold border-b text-[10px] uppercase tracking-wider">
                         <tr>
                             <th className="p-4 w-12 text-center"><input type="checkbox" checked={paginatedUsers.length > 0 && paginatedUsers.every(u => selectedUsers.includes(u.pk))} onChange={toggleSelectAll} className="w-4 h-4 accent-purple-600"/></th>
-                            <th className="p-4 cursor-pointer hover:bg-slate-100 transition-colors" style={{width: colWidths.user}} onClick={() => requestSort('username')}><div className="flex items-center gap-1 text-slate-700">USER {sortConfig.key === 'username' && <ArrowUpDown size={12} className={sortConfig.direction === 'asc' ? 'rotate-180' : ''}/>}</div><ResizeHandle id="user"/></th>
+                            <th className="p-4 cursor-pointer" style={{width: colWidths.user}} onClick={() => requestSort('username')}><div className="flex items-center gap-1">USER {sortConfig.key === 'username' && <ArrowUpDown size={12} className={sortConfig.direction === 'asc' ? 'rotate-180' : ''}/>}</div><ResizeHandle id="user"/></th>
                             <th className="p-4" style={{width: colWidths.actions}}>AKTIONEN <ResizeHandle id="actions"/></th>
                             <th className="p-4" style={{width: colWidths.bio}}>BIOGRAFIE <ResizeHandle id="bio"/></th>
-                            <th className="p-4 cursor-pointer hover:bg-slate-100 transition-colors" style={{width: colWidths.follower}} onClick={() => requestSort('followersCount')}><div className="flex items-center gap-1 text-slate-700">FOLLOWER {sortConfig.key === 'followersCount' && <ArrowUpDown size={12} className={sortConfig.direction === 'asc' ? 'rotate-180' : ''}/>}</div><ResizeHandle id="follower"/></th>
-                            <th className="p-4 cursor-pointer hover:bg-slate-100 transition-colors" style={{width: colWidths.date}} onClick={() => requestSort('foundDate')}><div className="flex items-center gap-1 text-slate-700">DATUM {sortConfig.key === 'foundDate' && <ArrowUpDown size={12} className={sortConfig.direction === 'asc' ? 'rotate-180' : ''}/>}</div><ResizeHandle id="date"/></th>
+                            <th className="p-4 cursor-pointer" style={{width: colWidths.follower}} onClick={() => requestSort('followersCount')}><div className="flex items-center gap-1">FOLLOWER {sortConfig.key === 'followersCount' && <ArrowUpDown size={12} className={sortConfig.direction === 'asc' ? 'rotate-180' : ''}/>}</div><ResizeHandle id="follower"/></th>
+                            <th className="p-4 cursor-pointer" style={{width: colWidths.date}} onClick={() => requestSort('foundDate')}><div className="flex items-center gap-1">DATUM {sortConfig.key === 'foundDate' && <ArrowUpDown size={12} className={sortConfig.direction === 'asc' ? 'rotate-180' : ''}/>}</div><ResizeHandle id="date"/></th>
                         </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 text-sm">
@@ -377,36 +420,40 @@ export default function App() {
                             const isG = user.isGerman;
                             const isNG = user.isGerman === false;
                             return (
-                                <tr key={user.pk} className={`group transition-all hover:bg-green-50/30 ${isS ? 'bg-purple-50/50' : ''} ${isG ? 'bg-yellow-100/40' : ''} ${isNG ? 'bg-red-50/30' : ''}`}>
-                                    <td className="p-4 text-center"><input type="checkbox" checked={isS} onChange={() => toggleSelectUser(user.pk)} className="w-4 h-4 accent-purple-600 transition-all scale-110"/></td>
+                                <tr key={user.pk} className={`group transition-all hover:bg-green-50/20 ${isS ? 'bg-purple-50/50' : ''} ${isG ? 'bg-yellow-100/40' : ''} ${isNG ? 'bg-red-50/30' : ''}`}>
+                                    <td className="p-4 text-center"><input type="checkbox" checked={isS} onChange={() => toggleSelectUser(user.pk)} className="w-4 h-4 accent-purple-600"/></td>
                                     <td className="p-4 align-top">
                                         <div className="flex items-center gap-3">
-                                            <div className="w-10 h-10 rounded-lg bg-slate-100 flex items-center justify-center font-black text-slate-400 shadow-inner">{user.username[0].toUpperCase()}</div>
+                                            {/* Avatar: Fest fixiert auf 40x40 Pixel, kein Schrumpfen, perfekter Kreis */}
+                                            <div className="w-10 h-10 rounded-full bg-slate-200 flex-shrink-0 flex items-center justify-center font-black text-slate-500 text-sm uppercase">
+                                                {user.username[0]}
+                                            </div>
                                             <div className="min-w-0">
-                                                <div className="flex flex-wrap items-center gap-1.5">
-                                                    <a href={`https://instagram.com/${user.username}`} target="_blank" className="font-bold text-slate-900 hover:text-purple-600 transition-colors block truncate">{user.username}</a>
-                                                    {isG && <span className="bg-orange-100 text-orange-700 text-[10px] px-1.5 rounded font-black border border-orange-200">DE</span>}
+                                                <div className="font-black text-slate-900 leading-tight">
+                                                    <a href={`https://instagram.com/${user.username}`} target="_blank" className="text-xl hover:text-purple-600 transition-all hover:underline decoration-2">
+                                                        {user.username}
+                                                    </a>
+                                                    {isG && <span className="ml-2 text-lg">🇩🇪</span>}
+                                                    {isNG && <span className="ml-2 text-lg">✘</span>}
                                                 </div>
-                                                <div className="text-[10px] text-slate-400 font-medium truncate">{user.fullName}</div>
-                                                <div className="text-[9px] text-slate-300 font-bold uppercase mt-1 tracking-tighter">Src: {user.sourceAccount}</div>
-                                                {user.status === 'new' && <span className="inline-block mt-1 bg-purple-600 text-white text-[8px] px-1.5 rounded-full font-bold">NEU</span>}
-                                                {user.germanCheckResult && (isG || isNG) && (
-                                                    <div className={`text-[9px] mt-1.5 font-bold px-1.5 py-0.5 rounded border ${isG ? 'bg-orange-50 text-orange-600 border-orange-100' : 'bg-red-50 text-red-600 border-red-100'}`}>DE {isG ? 'Sofort: ' : 'Scan: '}{user.germanCheckResult}</div>
-                                                )}
+                                                <div className="text-sm text-slate-500 font-medium mt-0.5">{user.fullName}</div>
+                                                <div className="text-[9px] text-slate-300 font-bold uppercase mt-1 tracking-wider">Src: {user.sourceAccount}</div>
+                                                {user.status === 'new' && <span className="inline-block mt-1.5 bg-purple-600 text-white text-[9px] px-2 py-0.5 rounded font-black tracking-widest">NEU</span>}
+                                                {user.germanCheckResult && (isG || isNG) && <div className="text-[10px] font-bold text-slate-500 mt-1.5 bg-slate-50 p-1 rounded border border-slate-100">{user.germanCheckResult}</div>}
                                             </div>
                                         </div>
                                     </td>
                                     <td className="p-4 align-top">
                                         <div className="flex gap-1">
-                                            <button onClick={() => handleStatusChange(user.pk, user.status === 'favorite' ? 'active' : 'favorite')} className={`p-2 rounded-lg border transition-all ${user.status === 'favorite' ? 'bg-yellow-400 border-yellow-500 text-white shadow-md shadow-yellow-100' : 'bg-white text-slate-300 hover:bg-yellow-50 hover:text-yellow-500'}`} title="Favorit"><Heart size={16} className={user.status === 'favorite' ? 'fill-white' : ''}/></button>
-                                            <button onClick={() => handleStatusChange(user.pk, user.status === 'eng' ? 'active' : 'eng')} className={`p-2 rounded-lg border transition-all ${user.status === 'eng' ? 'bg-orange-400 border-orange-500 text-white shadow-md shadow-orange-100' : 'bg-white text-slate-300 hover:bg-orange-50 hover:text-orange-500'}`} title="English"><Globe size={16}/></button>
-                                            <button onClick={() => handleStatusChange(user.pk, 'blocked')} className="p-2 bg-white border rounded-lg text-slate-300 hover:text-red-600 hover:bg-red-50 transition-all" title="Blockieren"><Ban size={16}/></button>
-                                            <button onClick={() => handleStatusChange(user.pk, user.status === 'hidden' ? 'active' : 'hidden')} className="p-2 bg-white border rounded-lg text-slate-300 hover:text-slate-600 transition-all" title="Verstecken"><EyeOff size={16} className={user.status === 'hidden' ? 'text-slate-600' : 'opacity-30'}/></button>
+                                            <button onClick={() => handleStatusChange(user.pk, user.status === 'favorite' ? 'active' : 'favorite')} className={`p-2 rounded border transition-all ${user.status === 'favorite' ? 'bg-green-500 border-green-600 text-white shadow-md' : 'bg-white text-green-500 border-green-100 hover:bg-green-50'}`} title="Favorit"><Heart size={16} className={user.status === 'favorite' ? 'fill-white' : ''}/></button>
+                                            <button onClick={() => handleStatusChange(user.pk, user.status === 'eng' ? 'active' : 'eng')} className={`p-2 rounded border transition-all ${user.status === 'eng' ? 'bg-blue-500 border-blue-600 text-white shadow-md' : 'bg-white text-blue-500 border-blue-100 hover:bg-blue-50'}`} title="English"><Globe size={16}/></button>
+                                            <button onClick={() => handleStatusChange(user.pk, 'blocked')} className="p-2 bg-white border border-red-100 rounded text-red-500 hover:bg-red-500 hover:text-white transition-all" title="Blockieren"><Ban size={16}/></button>
+                                            <button onClick={() => handleStatusChange(user.pk, user.status === 'hidden' ? 'active' : 'hidden')} className={`p-2 rounded border transition-all ${user.status === 'hidden' ? 'bg-orange-500 border-orange-600 text-white' : 'bg-white text-orange-500 border-orange-100 hover:bg-orange-50'}`} title="Verstecken"><EyeOff size={16}/></button>
                                         </div>
                                     </td>
-                                    <td className="p-4 align-top"><div className="text-slate-600 text-xs whitespace-pre-wrap line-clamp-4 leading-relaxed">{user.bio}</div></td>
-                                    <td className="p-4 align-top"><div className="font-bold text-blue-600 text-base">{user.followersCount?.toLocaleString()}</div></td>
-                                    <td className="p-4 align-top text-[10px] text-slate-400 font-bold">{formatDate(user.foundDate)}</td>
+                                    <td className="p-4 align-top text-slate-600 truncate">{user.bio}</td>
+                                    <td className="p-4 align-top font-bold text-blue-600">{user.followersCount?.toLocaleString()}</td>
+                                    <td className="p-4 align-top text-xs text-slate-400">{formatDate(user.foundDate)}</td>
                                 </tr>
                             );
                         })}
@@ -414,10 +461,10 @@ export default function App() {
                 </table>
             </div>
             {totalPages > 1 && (
-                <div className="flex items-center justify-center gap-4 py-10">
-                    <button disabled={currentPage === 1} onClick={() => setCurrentPage(prev => prev - 1)} className="p-3 bg-white border rounded-xl shadow-sm hover:text-purple-600 disabled:opacity-30 transition-all active:scale-90"><ArrowUpDown className="rotate-90" size={20} /></button>
-                    <div className="flex items-center gap-2"><span className="text-xs font-black text-slate-400 uppercase tracking-widest">Seite</span><span className="bg-white px-4 py-2 rounded-xl border-2 border-purple-100 font-black text-purple-600 text-base">{currentPage}</span><span className="text-xs font-black text-slate-400 uppercase tracking-widest">von {totalPages}</span></div>
-                    <button disabled={currentPage === totalPages} onClick={() => setCurrentPage(prev => prev + 1)} className="p-3 bg-white border rounded-xl shadow-sm hover:text-purple-600 disabled:opacity-30 transition-all active:scale-90"><ArrowUpDown className="-rotate-90" size={20} /></button>
+                <div className="flex items-center justify-center gap-4 py-8">
+                    <button disabled={currentPage === 1} onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))} className="p-2 border rounded hover:bg-white disabled:opacity-30"><ArrowUpDown className="rotate-90" size={18} /></button>
+                    <span className="text-sm font-bold">Seite {currentPage} von {totalPages}</span>
+                    <button disabled={currentPage === totalPages} onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))} className="p-2 border rounded hover:bg-white disabled:opacity-30"><ArrowUpDown className="-rotate-90" size={18} /></button>
                 </div>
             )}
             </>

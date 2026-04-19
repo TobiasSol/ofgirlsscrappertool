@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "start": "concurrently \"npm run dev\" \"cd backend && python server.py\" --names \"FRONTEND,BACKEND\" --prefix-colors \"cyan,yellow\""
+    "start": "concurrently \"vite\" \"cd backend && python server.py\" --names \"FRONTEND,BACKEND\" --prefix-colors \"cyan,yellow\""
   },
   "dependencies": {
     "lucide-react": "^0.263.1",
