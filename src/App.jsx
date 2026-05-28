@@ -16,15 +16,16 @@ const formatDate = (isoString) => {
 
 const TabButton = ({ active, label, count, onClick, color = "purple", icon }) => {
     const baseClass = "px-3 py-2 rounded-lg text-sm font-bold transition-all flex items-center gap-2 whitespace-nowrap";
-    const activeClass = active 
-        ? `bg-${color}-100 text-${color}-700 border border-${color}-200 shadow-sm` 
+    // Aktiver Tab IMMER kraeftig gruen, damit man auf den ersten Blick sieht wo man ist.
+    const activeClass = active
+        ? "bg-green-500 text-white border border-green-600 shadow-lg shadow-green-200 ring-2 ring-green-300"
         : "text-slate-500 hover:bg-slate-50 border border-transparent";
-    
+
     return (
         <button onClick={onClick} className={`${baseClass} ${activeClass}`}>
             {icon}
-            {label} 
-            {count !== undefined && <span className={`bg-white px-1.5 py-0.5 rounded-full text-xs opacity-80 border border-${color}-200`}>{count}</span>}
+            {label}
+            {count !== undefined && <span className={`px-1.5 py-0.5 rounded-full text-xs font-black ${active ? 'bg-white/95 text-green-700 border border-green-200' : `bg-white text-slate-600 opacity-80 border border-${color}-200`}`}>{count}</span>}
         </button>
     );
 };
@@ -62,22 +63,33 @@ const ScanBanner = ({ scan, recent, onStop }) => {
     const j = scan || recent;
     const percent = j.percent || 0;
     const isStopping = j.stopRequested && j.status === 'running';
+    // Stall-Erkennung: kein Heartbeat seit > 90 Sek -> wahrscheinlich haengender API-Call
+    const stale = (j.staleSeconds || 0) > 90;
+    const reallyStuck = (j.staleSeconds || 0) > 180;  // > 3 Min = ziemlich sicher tot
 
-    const statusColor = {
-        running: 'from-orange-500 to-pink-500',
-        finished: 'from-green-500 to-emerald-500',
-        error: 'from-red-500 to-rose-500',
-        stopped: 'from-slate-500 to-slate-600',
-        interrupted: 'from-amber-500 to-orange-500',
-    }[j.status] || 'from-slate-500 to-slate-600';
+    const statusColor = reallyStuck
+        ? 'from-red-600 to-red-700'
+        : stale
+        ? 'from-amber-500 to-orange-600'
+        : ({
+            running: 'from-orange-500 to-pink-500',
+            finished: 'from-green-500 to-emerald-500',
+            error: 'from-red-500 to-rose-500',
+            stopped: 'from-slate-500 to-slate-600',
+            interrupted: 'from-amber-500 to-orange-500',
+        }[j.status] || 'from-slate-500 to-slate-600');
 
-    const statusLabel = {
-        running: isStopping ? 'Wird gestoppt...' : 'Scan läuft',
-        finished: '✓ Scan abgeschlossen',
-        error: '✗ Fehler',
-        stopped: '◼ Scan gestoppt',
-        interrupted: '⚠ Unterbrochen (Server-Restart)',
-    }[j.status] || j.status;
+    const statusLabel = reallyStuck
+        ? `⚠ Scan hängt seit ${Math.floor((j.staleSeconds || 0) / 60)}min — bitte stoppen`
+        : stale
+        ? `⏳ Kein Lebenszeichen seit ${j.staleSeconds}s — Profil hängt evtl.`
+        : ({
+            running: isStopping ? 'Wird gestoppt...' : 'Scan läuft',
+            finished: '✓ Scan abgeschlossen',
+            error: '✗ Fehler',
+            stopped: '◼ Scan gestoppt',
+            interrupted: '⚠ Unterbrochen (Server-Restart)',
+        }[j.status] || j.status);
 
     return (
         <div className={`sticky top-0 z-50 bg-gradient-to-r ${statusColor} text-white shadow-lg animate-in slide-in-from-top duration-300`}>
@@ -153,6 +165,8 @@ export default function App() {
   const [manualUsername, setManualUsername] = useState(""); 
   const [selectedUsers, setSelectedUsers] = useState([]); 
   const [dachFilter, setDachFilter] = useState('all');
+  const [exportFilter, setExportFilter] = useState('all'); // all | exported | not_exported (greift im Favoriten-Tab)
+  const [scanFilter, setScanFilter] = useState('all'); // all | scanned | unscanned (greift in Favoriten + Ungefiltert)
   
   const [pageSize, setPageSize] = useState(20); 
   const [currentPage, setCurrentPage] = useState(1);
@@ -161,10 +175,19 @@ export default function App() {
   const [activeScan, setActiveScan] = useState(null);     // aktueller Job aus DB (Polling /api/scans/active)
   const [recentScan, setRecentScan] = useState(null);     // gerade beendet, kurz weiter anzeigen
   const [copySuccess, setCopySuccess] = useState(false);
+  const [exportHistory, setExportHistory] = useState([]); // Liste aller Export-Vorgaenge aus /api/exports
+  const [copiedExportId, setCopiedExportId] = useState(null); // fuer "Kopiert!"-Feedback pro Export-Eintrag
 
   const [colWidths, setColWidths] = useState(() => {
       const saved = localStorage.getItem('instaMonitor_colWidths');
-      return saved ? JSON.parse(saved) : { select: 40, user: 280, actions: 160, bio: 400, follower: 120, date: 100 };
+      const defaults = { select: 40, user: 280, email: 220, actions: 160, bio: 400, follower: 120, date: 100, lastScan: 130 };
+      if (!saved) return defaults;
+      try {
+          const parsed = JSON.parse(saved);
+          return { ...defaults, ...parsed };
+      } catch {
+          return defaults;
+      }
   });
 
   const startResize = (e, key) => {
@@ -183,16 +206,20 @@ export default function App() {
 
   useEffect(() => { localStorage.setItem('instaMonitor_colWidths', JSON.stringify(colWidths)); }, [colWidths]);
 
-  const stats = useMemo(() => ({
-    total: users.length,
-    unfiltered: users.filter(u => ['new', 'active', 'changed', 'contacted', 'not_found'].includes(u.status)).length,
-    favorites: users.filter(u => u.status === 'favorite').length,
-    dach: users.filter(u => u.isGerman).length,
-    eng: users.filter(u => u.status === 'eng').length,
-    hidden: users.filter(u => u.status === 'hidden').length,
-    blocked: users.filter(u => u.status === 'blocked').length,
-    email: users.filter(u => u.email).length
-  }), [users]);
+  const stats = useMemo(() => {
+    const live = users.filter(u => !u.notFoundDate); // ALLE Counts (ausser offline) ignorieren tote Profile
+    return {
+      total: users.length,
+      offline: users.filter(u => !!u.notFoundDate).length,
+      unfiltered: live.filter(u => ['new', 'active', 'changed', 'contacted', 'not_found'].includes(u.status)).length,
+      favorites: live.filter(u => u.status === 'favorite').length,
+      dach: live.filter(u => u.isGerman).length,
+      eng: live.filter(u => u.status === 'eng').length,
+      hidden: live.filter(u => u.status === 'hidden').length,
+      blocked: live.filter(u => u.status === 'blocked').length,
+      email: live.filter(u => u.email).length,
+    };
+  }, [users]);
 
   const loadData = async () => {
     setLoading(true);
@@ -205,7 +232,17 @@ export default function App() {
     setLoading(false);
   };
 
-  useEffect(() => { if (isAuthenticated) loadData(); }, [isAuthenticated]);
+  const loadExports = async () => {
+    try {
+      const res = await fetch(`${API_URL}/exports`);
+      if (!res.ok) return;
+      const data = await res.json();
+      setExportHistory(data.exports || []);
+    } catch (e) { /* ignorieren - naechster Tab-Wechsel laedt erneut */ }
+  };
+
+  useEffect(() => { if (isAuthenticated) { loadData(); loadExports(); } }, [isAuthenticated]);
+  useEffect(() => { if (activeTab === 'export') loadExports(); }, [activeTab]);
 
   // GLOBALES SCAN-POLLING. Laeuft ununterbrochen wenn eingeloggt.
   // Holt den aktiven Scan-Status aus der DB - funktioniert daher
@@ -300,25 +337,30 @@ export default function App() {
     await fetch(`${API_URL}/lead/update-status`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ pk, status: newStatus })});
   };
 
-  const handleExportEmails = () => {
+  const handleExportEmails = async () => {
     const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
     const allEmails = [];
+    const exportedPks = [];
 
     processedUsers.forEach(u => {
       // Suche im E-Mail-Feld
       const foundInEmail = (u.email || "").match(emailRegex);
-      if (foundInEmail) allEmails.push(...foundInEmail);
-
+      if (foundInEmail) {
+        allEmails.push(...foundInEmail);
+        exportedPks.push(u.pk);
+        return;
+      }
       // Falls dort nichts war, suche sicherheitshalber auch in der Bio
-      if (!foundInEmail) {
-        const foundInBio = (u.bio || "").match(emailRegex);
-        if (foundInBio) allEmails.push(...foundInBio);
+      const foundInBio = (u.bio || "").match(emailRegex);
+      if (foundInBio) {
+        allEmails.push(...foundInBio);
+        exportedPks.push(u.pk);
       }
     });
 
     // Dubletten entfernen und säubern
     const uniqueEmails = [...new Set(allEmails.map(e => e.toLowerCase().trim()))].join('\n');
-    
+
     if (!uniqueEmails) {
         alert("Keine gültigen E-Mail-Adressen zum Exportieren gefunden.");
         return;
@@ -333,6 +375,121 @@ export default function App() {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
+
+    // Alle User mit exportierter Email serverseitig als 'exportiert' markieren,
+    // damit man im Favoriten-Tab nach 'schon exportiert' / 'nicht exportiert' filtern kann.
+    if (exportedPks.length > 0) {
+      try {
+        // 'emails'-Export in der Historie ablegen, damit man ihn spaeter
+        // wieder runterladen / kopieren kann.
+        const res = await fetch(`${API_URL}/exports`, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            pks: exportedPks,
+            kind: 'emails',
+            label: `Email-Export ${new Date().toLocaleString('de-DE')} (${exportedPks.length} User)`,
+          }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          const exportedAt = data.exportedAt || new Date().toISOString();
+          setUsers(prev => prev.map(u => exportedPks.includes(u.pk) ? { ...u, lastExported: exportedAt } : u));
+          loadExports();
+        }
+      } catch (e) { /* Fehler ignorieren - Datei ist trotzdem exportiert */ }
+    }
+  };
+
+  // --- Export-Historie: Aktionen ---
+
+  const handleCreateExport = async (kind = 'usernames') => {
+    // Wenn User ausgewaehlt sind nehmen wir die, sonst die aktuelle Tab-Ansicht.
+    const sourceUsers = selectedUsers.length > 0
+      ? users.filter(u => selectedUsers.includes(u.pk))
+      : processedUsers;
+    if (sourceUsers.length === 0) {
+      alert("Keine User zum Exportieren ausgewählt.");
+      return;
+    }
+    const pks = sourceUsers.map(u => u.pk);
+    const labelKind = kind === 'emails' ? 'Email-Export' : 'Namen-Export';
+    const label = `${labelKind} ${new Date().toLocaleString('de-DE')} (${pks.length} User)`;
+    try {
+      const res = await fetch(`${API_URL}/exports`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ pks, kind, label }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        alert(`Export fehlgeschlagen: ${err.error || res.status}`);
+        return;
+      }
+      const data = await res.json();
+      const exportedAt = data.exportedAt || new Date().toISOString();
+      setUsers(prev => prev.map(u => pks.includes(u.pk) ? { ...u, lastExported: exportedAt } : u));
+      setSelectedUsers([]);
+      await loadExports();
+      // Wechsele direkt in den Export-Tab, damit der User sieht wo seine Datei ist
+      setActiveTab('export');
+    } catch (e) {
+      alert("Netzwerkfehler beim Export.");
+    }
+  };
+
+  const _fetchExportPayload = async (exportId) => {
+    const res = await fetch(`${API_URL}/exports/${exportId}`);
+    if (!res.ok) return null;
+    return await res.json();
+  };
+
+  const handleDownloadExport = async (exportEntry, kind) => {
+    // kind: 'usernames' | 'emails' - ueberschreibt den gespeicherten Export-Typ
+    // damit man auch "nur Emails" aus einem Namen-Export ziehen kann.
+    const payload = await _fetchExportPayload(exportEntry.id);
+    if (!payload) { alert("Export konnte nicht geladen werden."); return; }
+    const list = (kind === 'emails') ? (payload.emails || []) : (payload.usernames || []);
+    if (list.length === 0) {
+      alert(kind === 'emails' ? "Dieser Export enthält keine Emails." : "Dieser Export enthält keine Namen.");
+      return;
+    }
+    const text = list.join('\n');
+    const blob = new Blob([text], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const stamp = (exportEntry.createdAt || new Date().toISOString()).replace(/[:.]/g, '-').split('T').join('_').slice(0, 19);
+    a.href = url;
+    a.download = `${kind === 'emails' ? 'emails' : 'usernames'}_${stamp}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const handleCopyExport = async (exportEntry, kind) => {
+    const payload = await _fetchExportPayload(exportEntry.id);
+    if (!payload) { alert("Export konnte nicht geladen werden."); return; }
+    const list = (kind === 'emails') ? (payload.emails || []) : (payload.usernames || []);
+    if (list.length === 0) {
+      alert(kind === 'emails' ? "Dieser Export enthält keine Emails." : "Dieser Export enthält keine Namen.");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(list.join('\n'));
+      setCopiedExportId(`${exportEntry.id}-${kind}`);
+      setTimeout(() => setCopiedExportId(null), 1500);
+    } catch (e) {
+      alert("Kopieren fehlgeschlagen.");
+    }
+  };
+
+  const handleDeleteExport = async (exportId) => {
+    if (!window.confirm("Diesen Export-Eintrag wirklich löschen? Die User selbst bleiben erhalten.")) return;
+    try {
+      const res = await fetch(`${API_URL}/exports/${exportId}`, { method: 'DELETE' });
+      if (res.ok) loadExports();
+    } catch (e) { /* still */ }
   };
 
   const requestSort = (key) => {
@@ -344,22 +501,37 @@ export default function App() {
   const processedUsers = useMemo(() => {
     let filtered = [...users];
     switch (activeTab) {
-        case 'review': 
+        case 'review':
         case 'unfiltered': filtered = filtered.filter(u => ['new', 'active', 'changed', 'contacted', 'not_found'].includes(u.status)); break;
         case 'dach': filtered = filtered.filter(u => u.isGerman); break;
         case 'favorites': filtered = filtered.filter(u => u.status === 'favorite'); break;
         case 'eng': filtered = filtered.filter(u => u.status === 'eng'); break;
         case 'hidden': filtered = filtered.filter(u => u.status === 'hidden'); break;
         case 'blocked': filtered = filtered.filter(u => u.status === 'blocked'); break;
-        case 'email': 
-            filtered = filtered.filter(u => u.email && u.status !== 'blocked' && u.status !== 'hidden'); 
+        case 'offline': filtered = filtered.filter(u => !!u.notFoundDate); break;
+        case 'email':
+            filtered = filtered.filter(u => u.email && u.status !== 'blocked' && u.status !== 'hidden');
             break;
         case 'export': filtered = selectedUsers.length > 0 ? filtered.filter(u => selectedUsers.includes(u.pk)) : []; break;
     }
-    if (activeTab === 'unfiltered') {
+    // Globale Regel: Offline-User (Profil existiert nicht mehr) NUR im 'offline'-Tab zeigen.
+    // In allen anderen Tabs werden sie ausgeblendet, damit man nicht mehr mit toten Profilen arbeitet.
+    if (activeTab !== 'offline' && activeTab !== 'export') {
+        filtered = filtered.filter(u => !u.notFoundDate);
+    }
+    if (activeTab === 'unfiltered' || activeTab === 'favorites') {
         if (dachFilter === 'de') filtered = filtered.filter(u => u.isGerman === true);
         else if (dachFilter === 'no_de') filtered = filtered.filter(u => u.isGerman === false);
         else if (dachFilter === 'unscanned') filtered = filtered.filter(u => u.isGerman === null);
+        // 'NUR GESCANNT' = nur User mit echtem Datum (lastScrapedDate ODER notFoundDate).
+        // User die nur 'germanCheckResult' aus alten Scans (ohne Datum) haben, gelten
+        // als ungescannt - sonst kann man sie nie nachscannen / sehen wann sie dran waren.
+        if (scanFilter === 'scanned') filtered = filtered.filter(u => u.lastScrapedDate || u.notFoundDate);
+        else if (scanFilter === 'unscanned') filtered = filtered.filter(u => !u.lastScrapedDate && !u.notFoundDate);
+    }
+    if (activeTab === 'favorites') {
+        if (exportFilter === 'exported') filtered = filtered.filter(u => !!u.lastExported);
+        else if (exportFilter === 'not_exported') filtered = filtered.filter(u => !u.lastExported);
     }
     if (filterText) {
         const l = filterText.toLowerCase();
@@ -371,11 +543,11 @@ export default function App() {
         if (typeof aV === 'string') { aV = aV.toLowerCase(); bV = bV.toLowerCase(); }
         return aV < bV ? (sortConfig.direction === 'asc' ? -1 : 1) : (sortConfig.direction === 'asc' ? 1 : -1);
     });
-  }, [users, activeTab, filterText, sortConfig, selectedUsers, dachFilter]);
+  }, [users, activeTab, filterText, sortConfig, selectedUsers, dachFilter, exportFilter, scanFilter]);
 
   const paginatedUsers = useMemo(() => processedUsers.slice((currentPage - 1) * pageSize, currentPage * pageSize), [processedUsers, currentPage, pageSize]);
   const totalPages = Math.ceil(processedUsers.length / pageSize);
-  useEffect(() => { setCurrentPage(1); }, [activeTab, filterText, dachFilter, pageSize]);
+  useEffect(() => { setCurrentPage(1); }, [activeTab, filterText, dachFilter, exportFilter, scanFilter, pageSize]);
 
   const toggleSelectAll = () => {
     const allOnPageSelected = paginatedUsers.every(u => selectedUsers.includes(u.pk));
@@ -449,6 +621,7 @@ export default function App() {
             <TabButton active={activeTab === 'email'} onClick={() => setActiveTab('email')} label="Email" count={stats.email} color="blue"/>
             <TabButton active={activeTab === 'hidden'} onClick={() => setActiveTab('hidden')} label="Versteckt" count={stats.hidden} color="slate"/>
             <TabButton active={activeTab === 'blocked'} onClick={() => setActiveTab('blocked')} label="Blockiert" count={stats.blocked} color="red"/>
+            <TabButton active={activeTab === 'offline'} onClick={() => setActiveTab('offline')} label="Offline" count={stats.offline} color="red" icon={<XCircle size={16}/>}/>
             <TabButton active={activeTab === 'export'} onClick={() => setActiveTab('export')} label="Export" color="green"/>
             <TabButton active={activeTab === 'add'} onClick={() => setActiveTab('add')} label="+" color="indigo" />
         </div>
@@ -473,19 +646,113 @@ export default function App() {
                 </div>
             </div>
         ) : activeTab === 'export' ? (
-            <div className="bg-white p-8 rounded-xl border border-slate-200 space-y-8 animate-in fade-in zoom-in-95">
-                <h2 className="text-2xl font-bold">Export / Backup</h2>
-                <div className="grid md:grid-cols-2 gap-8">
-                    <div className="space-y-4">
-                        <h3 className="font-bold text-slate-600">Namen kopieren</h3>
-                        <textarea readOnly className="w-full h-40 p-4 bg-slate-50 border rounded-lg font-mono text-sm" value={processedUsers.map(u => u.username).join('\n')} />
-                        <button onClick={() => { navigator.clipboard.writeText(processedUsers.map(u => u.username).join('\n')); setCopySuccess(true); setTimeout(() => setCopySuccess(false), 2000); }} className="w-full bg-slate-800 text-white py-2 rounded-lg font-bold">{copySuccess ? 'Kopiert!' : 'Kopieren'}</button>
+            <div className="space-y-6 animate-in fade-in zoom-in-95">
+                {/* === EXPORT-HISTORIE === */}
+                <div className="bg-white p-6 md:p-8 rounded-xl border border-slate-200 space-y-5">
+                    <div className="flex items-center justify-between flex-wrap gap-3">
+                        <div>
+                            <h2 className="text-2xl font-bold flex items-center gap-2"><Download size={22} className="text-green-600"/> Export-Historie</h2>
+                            <p className="text-sm text-slate-500 mt-1">Alle Export-Vorgänge mit Datum & Uhrzeit. Du kannst sie jederzeit erneut runterladen oder die Namen/Emails kopieren.</p>
+                        </div>
+                        <button onClick={loadExports} className="text-xs px-3 py-1.5 border border-slate-200 rounded-lg hover:bg-slate-50 flex items-center gap-2"><RefreshCw size={12}/> Aktualisieren</button>
                     </div>
-                    <div className="space-y-4">
-                        <h3 className="font-bold text-slate-600">Datenbank Backup</h3>
+
+                    {exportHistory.length === 0 ? (
+                        <div className="text-center py-12 border-2 border-dashed border-slate-200 rounded-xl">
+                            <Download size={32} className="mx-auto text-slate-300 mb-3"/>
+                            <p className="text-slate-500 font-bold">Noch keine Exports vorhanden</p>
+                            <p className="text-xs text-slate-400 mt-2">Wähle in der Liste User aus und klicke auf "exportieren" oder nutze "Emails (.txt)" im Email-Tab.</p>
+                        </div>
+                    ) : (
+                        <div className="space-y-3">
+                            {exportHistory.map(ex => {
+                                const created = ex.createdAt ? new Date(ex.createdAt) : null;
+                                const dateStr = created ? created.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' }) : '?';
+                                const timeStr = created ? created.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' }) : '';
+                                const isEmail = ex.kind === 'emails';
+                                return (
+                                    <div key={ex.id} className="border border-slate-200 rounded-xl p-4 hover:border-green-300 hover:bg-green-50/30 transition-all">
+                                        <div className="flex items-start justify-between gap-3 flex-wrap">
+                                            <div className="min-w-0 flex-1">
+                                                <div className="flex items-center gap-2 flex-wrap">
+                                                    <span className={`text-[9px] font-black px-2 py-0.5 rounded uppercase tracking-widest ${isEmail ? 'bg-blue-100 text-blue-700 border border-blue-200' : 'bg-green-100 text-green-700 border border-green-200'}`}>
+                                                        {isEmail ? 'EMAILS' : 'NAMEN'}
+                                                    </span>
+                                                    <span className="font-bold text-slate-800 truncate">{ex.label}</span>
+                                                </div>
+                                                <div className="flex items-center gap-3 mt-1.5 text-xs text-slate-500">
+                                                    <span className="font-mono bg-slate-100 px-2 py-0.5 rounded">{ex.count} User</span>
+                                                    <span className="font-mono">{dateStr} {timeStr} Uhr</span>
+                                                </div>
+                                                {ex.preview && ex.preview.length > 0 && (
+                                                    <div className="mt-2 text-[11px] text-slate-400 truncate font-mono">
+                                                        {ex.preview.join(', ')}{ex.count > ex.preview.length ? ` … +${ex.count - ex.preview.length}` : ''}
+                                                    </div>
+                                                )}
+                                            </div>
+                                            <div className="flex items-center gap-1.5 flex-wrap justify-end">
+                                                <button
+                                                    onClick={() => handleDownloadExport(ex, 'usernames')}
+                                                    className="bg-slate-800 text-white px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-1 hover:bg-slate-900"
+                                                    title="Namen als .txt-Datei runterladen"
+                                                >
+                                                    <Download size={12}/> Namen .txt
+                                                </button>
+                                                <button
+                                                    onClick={() => handleCopyExport(ex, 'usernames')}
+                                                    className="bg-white text-slate-700 border border-slate-300 px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-1 hover:bg-slate-50"
+                                                    title="Namen in Zwischenablage kopieren"
+                                                >
+                                                    {copiedExportId === `${ex.id}-usernames` ? <><Check size={12} className="text-green-600"/> Kopiert</> : <><Copy size={12}/> Namen kopieren</>}
+                                                </button>
+                                                <button
+                                                    onClick={() => handleDownloadExport(ex, 'emails')}
+                                                    className="bg-blue-600 text-white px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-1 hover:bg-blue-700"
+                                                    title="Emails als .txt-Datei runterladen"
+                                                >
+                                                    <Mail size={12}/> Emails .txt
+                                                </button>
+                                                <button
+                                                    onClick={() => handleCopyExport(ex, 'emails')}
+                                                    className="bg-white text-blue-700 border border-blue-200 px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-1 hover:bg-blue-50"
+                                                    title="Emails in Zwischenablage kopieren"
+                                                >
+                                                    {copiedExportId === `${ex.id}-emails` ? <><Check size={12} className="text-green-600"/> Kopiert</> : <><Copy size={12}/> Emails kopieren</>}
+                                                </button>
+                                                <button
+                                                    onClick={() => handleDeleteExport(ex.id)}
+                                                    className="bg-white text-red-500 border border-red-100 p-1.5 rounded-md hover:bg-red-50"
+                                                    title="Aus Historie löschen (User bleiben erhalten)"
+                                                >
+                                                    <Trash2 size={12}/>
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    )}
+                </div>
+
+                {/* === SCHNELL-EXPORT (aktuelle Tab-Ansicht) === */}
+                <div className="bg-white p-6 md:p-8 rounded-xl border border-slate-200 space-y-4">
+                    <h3 className="font-bold text-slate-700 text-lg">Schnell-Export aktueller Ansicht</h3>
+                    <p className="text-xs text-slate-500 -mt-2">Exportiert die User aus dem aktuell aktiven Tab (oder, wenn welche ausgewählt sind, nur die ausgewählten). Wird in der Historie oben gespeichert.</p>
+                    <div className="flex gap-3 flex-wrap">
+                        <button onClick={() => handleCreateExport('usernames')} className="bg-green-600 text-white px-4 py-2 rounded-lg font-bold flex items-center gap-2 hover:bg-green-700"><Download size={16}/> Namen exportieren</button>
+                        <button onClick={() => handleCreateExport('emails')} className="bg-blue-600 text-white px-4 py-2 rounded-lg font-bold flex items-center gap-2 hover:bg-blue-700"><Mail size={16}/> Emails exportieren</button>
+                        <button onClick={() => { navigator.clipboard.writeText(processedUsers.map(u => u.username).join('\n')); setCopySuccess(true); setTimeout(() => setCopySuccess(false), 2000); }} className="bg-slate-800 text-white px-4 py-2 rounded-lg font-bold flex items-center gap-2"><Copy size={16}/> {copySuccess ? 'Kopiert!' : 'Namen schnell kopieren'}</button>
+                    </div>
+                </div>
+
+                {/* === DATENBANK BACKUP === */}
+                <div className="bg-white p-6 md:p-8 rounded-xl border border-slate-200 space-y-4">
+                    <h3 className="font-bold text-slate-700 text-lg">Datenbank Backup</h3>
+                    <div className="grid md:grid-cols-2 gap-4">
                         <button onClick={() => window.location.href = `${API_URL}/export`} className="w-full bg-blue-600 text-white py-3 rounded-lg font-bold flex items-center justify-center gap-2"><Download size={18}/> Download JSON</button>
-                        <label className="w-full border-2 border-dashed p-8 rounded-xl flex flex-col items-center gap-2 cursor-pointer hover:bg-slate-50 transition-all">
-                            <Upload size={24}/> <span>JSON wiederherstellen</span>
+                        <label className="w-full border-2 border-dashed p-6 rounded-xl flex flex-col items-center gap-2 cursor-pointer hover:bg-slate-50 transition-all">
+                            <Upload size={24}/> <span className="font-bold text-sm">JSON wiederherstellen</span>
                             <input type="file" accept=".json" className="hidden" onChange={async (e) => { const f = e.target.files[0]; if(!f) return; const fd = new FormData(); fd.append('file', f); await fetch(`${API_URL}/import`, {method: 'POST', body: fd}); loadData(); }} />
                         </label>
                     </div>
@@ -497,9 +764,45 @@ export default function App() {
                 <div className="flex flex-wrap items-center justify-center md:justify-start gap-3 w-full md:w-auto">
                     <div className="relative w-full sm:w-64 md:w-72"><Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" /><input type="text" placeholder="Suchen..." className="w-full pl-10 pr-4 py-2 bg-slate-50 border rounded-xl outline-none focus:border-purple-500" value={filterText} onChange={(e) => setFilterText(e.target.value)} /></div>
                     <button onClick={handleDachScan} className="bg-orange-50 text-orange-600 border border-orange-200 px-4 py-2 rounded-lg font-bold flex items-center gap-2 hover:bg-orange-100 transition-all"><Globe size={16}/> {selectedUsers.length > 0 ? `${selectedUsers.length} Scannen` : "Alle Scannen"}</button>
-                    <div className="flex bg-slate-100 p-1 rounded-lg gap-1 border">
-                        {['all', 'de', 'no_de', 'unscanned'].map(f => <button key={f} onClick={() => setDachFilter(f)} className={`px-3 py-1 rounded-md text-xs font-bold ${dachFilter === f ? 'bg-white text-purple-600 shadow-sm' : 'text-slate-500'}`}>{f.toUpperCase()}</button>)}
-                    </div>
+                    {(activeTab === 'unfiltered' || activeTab === 'favorites') && (
+                        <div className="flex bg-slate-100 p-1 rounded-lg gap-1 border">
+                            {['all', 'de', 'no_de', 'unscanned'].map(f => <button key={f} onClick={() => setDachFilter(f)} className={`px-3 py-1 rounded-md text-xs font-bold ${dachFilter === f ? 'bg-white text-purple-600 shadow-sm' : 'text-slate-500'}`}>{f.toUpperCase()}</button>)}
+                        </div>
+                    )}
+                    {(activeTab === 'unfiltered' || activeTab === 'favorites') && (
+                        <div className="flex bg-slate-100 p-1 rounded-lg gap-1 border">
+                            {[
+                                {key: 'all', label: 'ALLE'},
+                                {key: 'scanned', label: 'NUR GESCANNT'},
+                                {key: 'unscanned', label: 'NUR UNGESCANNT'},
+                            ].map(f => (
+                                <button
+                                    key={f.key}
+                                    onClick={() => setScanFilter(f.key)}
+                                    className={`px-3 py-1 rounded-md text-xs font-bold ${scanFilter === f.key ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500'}`}
+                                >
+                                    {f.label}
+                                </button>
+                            ))}
+                        </div>
+                    )}
+                    {activeTab === 'favorites' && (
+                        <div className="flex bg-slate-100 p-1 rounded-lg gap-1 border">
+                            {[
+                                {key: 'all', label: 'ALL'},
+                                {key: 'exported', label: 'SCHON EXPORTIERT'},
+                                {key: 'not_exported', label: 'NICHT EXPORTIERT'},
+                            ].map(f => (
+                                <button
+                                    key={f.key}
+                                    onClick={() => setExportFilter(f.key)}
+                                    className={`px-3 py-1 rounded-md text-xs font-bold ${exportFilter === f.key ? 'bg-white text-green-600 shadow-sm' : 'text-slate-500'}`}
+                                >
+                                    {f.label}
+                                </button>
+                            ))}
+                        </div>
+                    )}
                 </div>
                 <div className="flex items-center gap-3 w-full md:w-auto justify-between">
                     <div className="text-[10px] font-black text-slate-400 bg-slate-100 px-2 py-1 rounded-full uppercase tracking-tighter">{processedUsers.length} User</div>
@@ -516,6 +819,15 @@ export default function App() {
                     <div className="flex bg-slate-50 p-1 rounded-lg border">
                         {[10, 20, 50, 100].map(s => <button key={s} onClick={() => setPageSize(s)} className={`px-2 py-1 rounded-md text-xs font-bold ${pageSize === s ? 'bg-white text-purple-600 shadow-sm' : 'text-slate-400'}`}>{s}</button>)}
                     </div>
+                    {selectedUsers.length > 0 && (
+                        <button
+                            onClick={() => handleCreateExport('usernames')}
+                            className="bg-green-600 text-white px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-2 hover:bg-green-700 transition-all shadow-lg shadow-green-100"
+                            title={`${selectedUsers.length} ausgewählte User exportieren`}
+                        >
+                            <Download size={14}/> {selectedUsers.length} exportieren
+                        </button>
+                    )}
                     {selectedUsers.length > 0 && <button onClick={handleDeleteSelected} className="bg-red-600 text-white p-2 rounded-lg hover:bg-red-700 shadow-lg shadow-red-100"><Trash2 size={16}/></button>}
                 </div>
             </div>
@@ -526,10 +838,12 @@ export default function App() {
                         <tr>
                             <th className="p-4 w-12 text-center"><input type="checkbox" checked={paginatedUsers.length > 0 && paginatedUsers.every(u => selectedUsers.includes(u.pk))} onChange={toggleSelectAll} className="w-4 h-4 accent-purple-600"/></th>
                             <th className="p-4 cursor-pointer" style={{width: colWidths.user}} onClick={() => requestSort('username')}><div className="flex items-center gap-1">USER {sortConfig.key === 'username' && <ArrowUpDown size={12} className={sortConfig.direction === 'asc' ? 'rotate-180' : ''}/>}</div><ResizeHandle id="user"/></th>
+                            <th className="p-4" style={{width: colWidths.email}}><div className="flex items-center gap-1"><Mail size={12}/> E-MAIL</div><ResizeHandle id="email"/></th>
                             <th className="p-4" style={{width: colWidths.actions}}>AKTIONEN <ResizeHandle id="actions"/></th>
                             <th className="p-4" style={{width: colWidths.bio}}>BIOGRAFIE <ResizeHandle id="bio"/></th>
                             <th className="p-4 cursor-pointer" style={{width: colWidths.follower}} onClick={() => requestSort('followersCount')}><div className="flex items-center gap-1">FOLLOWER {sortConfig.key === 'followersCount' && <ArrowUpDown size={12} className={sortConfig.direction === 'asc' ? 'rotate-180' : ''}/>}</div><ResizeHandle id="follower"/></th>
                             <th className="p-4 cursor-pointer" style={{width: colWidths.date}} onClick={() => requestSort('foundDate')}><div className="flex items-center gap-1">DATUM {sortConfig.key === 'foundDate' && <ArrowUpDown size={12} className={sortConfig.direction === 'asc' ? 'rotate-180' : ''}/>}</div><ResizeHandle id="date"/></th>
+                            <th className="p-4 cursor-pointer" style={{width: colWidths.lastScan}} onClick={() => requestSort('lastScrapedDate')}><div className="flex items-center gap-1">LETZTER SCAN {sortConfig.key === 'lastScrapedDate' && <ArrowUpDown size={12} className={sortConfig.direction === 'asc' ? 'rotate-180' : ''}/>}</div><ResizeHandle id="lastScan"/></th>
                         </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 text-sm">
@@ -537,8 +851,16 @@ export default function App() {
                             const isS = selectedUsers.includes(user.pk);
                             const isG = user.isGerman;
                             const isNG = user.isGerman === false;
+                            const isGone = !!user.notFoundDate; // Profil existiert nicht (mehr)
+                            // Hintergrund-Prioritaet: gone > selected > german > non-german
+                            const rowBg = isGone
+                                ? 'bg-red-200/70 hover:bg-red-200/90'
+                                : isS ? 'bg-purple-50/50'
+                                : isG ? 'bg-yellow-100/40'
+                                : isNG ? 'bg-red-50/30'
+                                : '';
                             return (
-                                <tr key={user.pk} className={`group transition-all hover:bg-green-50/20 ${isS ? 'bg-purple-50/50' : ''} ${isG ? 'bg-yellow-100/40' : ''} ${isNG ? 'bg-red-50/30' : ''}`}>
+                                <tr key={user.pk} className={`group transition-all hover:bg-green-50/20 ${rowBg}`}>
                                     <td className="p-4 text-center"><input type="checkbox" checked={isS} onChange={() => toggleSelectUser(user.pk)} className="w-4 h-4 accent-purple-600"/></td>
                                     <td className="p-4 align-top">
                                         <div className="flex items-center gap-3">
@@ -557,9 +879,57 @@ export default function App() {
                                                 <div className="text-sm text-slate-500 font-medium mt-0.5">{user.fullName}</div>
                                                 <div className="text-[9px] text-slate-300 font-bold uppercase mt-1 tracking-wider">Src: {user.sourceAccount}</div>
                                                 {user.status === 'new' && <span className="inline-block mt-1.5 bg-purple-600 text-white text-[9px] px-2 py-0.5 rounded font-black tracking-widest">NEU</span>}
+                                                {isGone && (
+                                                    <div
+                                                        className="inline-flex items-center gap-1 mt-1.5 bg-red-600 text-white text-[9px] px-2 py-0.5 rounded font-black tracking-widest border border-red-700 shadow-sm"
+                                                        title={`Beim letzten Scan am ${formatDate(user.notFoundDate)} war dieses Profil nicht erreichbar`}
+                                                    >
+                                                        <XCircle size={10}/> EXISTIERT NICHT — SCAN {formatDate(user.notFoundDate)}
+                                                    </div>
+                                                )}
+                                                {user.lastExported && (
+                                                    <div className="inline-flex items-center gap-1 mt-1.5 ml-1 bg-green-100 text-green-700 text-[9px] px-2 py-0.5 rounded font-black tracking-widest border border-green-200" title={`Exportiert am ${formatDate(user.lastExported)}`}>
+                                                        <Download size={10}/> EXPORTIERT {formatDate(user.lastExported)}
+                                                    </div>
+                                                )}
                                                 {user.germanCheckResult && (isG || isNG) && <div className="text-[10px] font-bold text-slate-500 mt-1.5 bg-slate-50 p-1 rounded border border-slate-100">{user.germanCheckResult}</div>}
                                             </div>
                                         </div>
+                                    </td>
+                                    <td className="p-4 align-top">
+                                        {(() => {
+                                            const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/;
+                                            const fromField = (user.email || '').match(emailRegex)?.[0];
+                                            const fromBio = !fromField ? (user.bio || '').match(emailRegex)?.[0] : null;
+                                            const mail = fromField || fromBio;
+                                            if (!mail) {
+                                                return <span className="text-slate-300 text-xs font-medium">—</span>;
+                                            }
+                                            return (
+                                                <div className="flex items-center gap-2 min-w-0">
+                                                    <a
+                                                        href={`mailto:${mail}`}
+                                                        className="text-sm font-medium text-blue-600 hover:text-blue-800 hover:underline truncate"
+                                                        title={mail}
+                                                    >
+                                                        {mail}
+                                                    </a>
+                                                    <button
+                                                        onClick={(e) => {
+                                                            e.preventDefault();
+                                                            navigator.clipboard.writeText(mail);
+                                                        }}
+                                                        className="p-1 rounded border border-slate-200 text-slate-400 hover:bg-slate-100 hover:text-slate-700 flex-shrink-0"
+                                                        title="E-Mail kopieren"
+                                                    >
+                                                        <Mail size={12}/>
+                                                    </button>
+                                                    {fromBio && (
+                                                        <span className="text-[9px] font-bold text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded uppercase tracking-wider flex-shrink-0" title="Aus Bio extrahiert">BIO</span>
+                                                    )}
+                                                </div>
+                                            );
+                                        })()}
                                     </td>
                                     <td className="p-4 align-top">
                                         <div className="flex gap-1">
@@ -572,6 +942,30 @@ export default function App() {
                                     <td className="p-4 align-top text-slate-600 truncate">{user.bio}</td>
                                     <td className="p-4 align-top font-bold text-blue-600">{user.followersCount?.toLocaleString()}</td>
                                     <td className="p-4 align-top text-xs text-slate-400">{formatDate(user.foundDate)}</td>
+                                    <td className="p-4 align-top text-xs">
+                                        {(() => {
+                                            // Bestes verfuegbares Scan-Datum nehmen.
+                                            // Vorrang: lastScrapedDate (genau), dann notFoundDate (impliziert Scan), sonst nichts.
+                                            const scanIso = user.lastScrapedDate || user.notFoundDate;
+                                            if (scanIso) {
+                                                const isApprox = !user.lastScrapedDate && !!user.notFoundDate;
+                                                return (
+                                                    <div className="flex flex-col">
+                                                        <span className="text-slate-600 font-bold">{formatDate(scanIso)}</span>
+                                                        <span className="text-[10px] text-slate-400">
+                                                            {new Date(scanIso).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })} Uhr
+                                                        </span>
+                                                        {isApprox && <span className="text-[9px] text-amber-600 font-bold mt-0.5">~ ungefähr</span>}
+                                                    </div>
+                                                );
+                                            }
+                                            // Kein Datum, aber DACH-Check vorhanden -> wurde mal gescannt vor dem Update
+                                            if (user.germanCheckResult) {
+                                                return <span className="text-[10px] text-slate-400 italic">schon gescannt<br/>(kein Datum)</span>;
+                                            }
+                                            return <span className="text-slate-300 italic">noch nie</span>;
+                                        })()}
+                                    </td>
                                 </tr>
                             );
                         })}

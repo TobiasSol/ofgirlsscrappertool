@@ -3,6 +3,7 @@ import time
 import random
 import re
 import threading
+import concurrent.futures
 import os
 import requests
 import sys
@@ -125,6 +126,7 @@ class Lead(db.Model):
     last_exported = db.Column(db.String, nullable=True)
     is_german = db.Column(db.Boolean, default=None, nullable=True)
     german_check_result = db.Column(db.String, nullable=True)
+    not_found_date = db.Column(db.String, nullable=True)  # gesetzt wenn das IG-Profil beim Scan nicht (mehr) existiert
 
     def to_dict(self):
         return {
@@ -136,8 +138,56 @@ class Lead(db.Model):
             "changeDetails": self.change_details, "avatar": self.avatar,
             "externalUrl": self.external_url, "lastUpdatedDate": self.last_updated_date,
             "lastExported": self.last_exported, "isGerman": self.is_german,
-            "germanCheckResult": self.german_check_result
+            "germanCheckResult": self.german_check_result,
+            "notFoundDate": self.not_found_date,
         }
+
+class ExportBatch(db.Model):
+    """Persistierte Export-Historie. Jeder Eintrag = ein Export-Vorgang
+    den der User im Frontend ausgeloest hat. Speichert sowohl die PKs
+    (referenziell) als auch einen Snapshot der Usernamen, damit man
+    spaeter immer noch sieht welche User exportiert wurden, selbst
+    wenn diese inzwischen geloescht wurden.
+    """
+    __tablename__ = 'export_batches'
+    id = db.Column(db.Integer, primary_key=True)
+    label = db.Column(db.String(255), nullable=True)
+    kind = db.Column(db.String(20), default='usernames')   # 'usernames' | 'emails'
+    count = db.Column(db.Integer, default=0)
+    pks_json = db.Column(db.Text, nullable=True)           # JSON-Liste der Lead-PKs
+    usernames_json = db.Column(db.Text, nullable=True)     # JSON-Liste der Usernamen (Snapshot)
+    emails_json = db.Column(db.Text, nullable=True)        # JSON-Liste der Emails (Snapshot, nur kind='emails')
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    def to_dict(self, include_payload=False):
+        try:
+            usernames = json.loads(self.usernames_json) if self.usernames_json else []
+        except Exception:
+            usernames = []
+        try:
+            emails = json.loads(self.emails_json) if self.emails_json else []
+        except Exception:
+            emails = []
+        try:
+            pks = json.loads(self.pks_json) if self.pks_json else []
+        except Exception:
+            pks = []
+        d = {
+            "id": self.id,
+            "label": self.label,
+            "kind": self.kind,
+            "count": self.count,
+            "createdAt": self.created_at.isoformat() if self.created_at else None,
+        }
+        if include_payload:
+            d["usernames"] = usernames
+            d["emails"] = emails
+            d["pks"] = pks
+        else:
+            # Vorschau: erste 5 Namen reichen fuer die Liste
+            d["preview"] = usernames[:5]
+        return d
+
 
 class ScanJob(db.Model):
     """Persistierter Scan-Status. Lebt in der DB damit:
@@ -163,6 +213,7 @@ class ScanJob(db.Model):
     def to_dict(self):
         elapsed = None
         eta = None
+        stale = None
         now = datetime.utcnow()
         if self.started_at:
             elapsed = int((now - self.started_at).total_seconds())
@@ -170,6 +221,11 @@ class ScanJob(db.Model):
                 rate = elapsed / self.processed                  # Sek pro User
                 remaining = max(0, self.total - self.processed)
                 eta = int(rate * remaining)
+        # Sekunden seit letztem Heartbeat - das Frontend zeigt damit eine
+        # 'Hängt gerade?'-Warnung an. Server liefert es, damit lokale
+        # Browser-Zeit/Server-Zeit nicht auseinander laufen.
+        if self.last_heartbeat and self.status == 'running':
+            stale = max(0, int((now - self.last_heartbeat).total_seconds()))
         return {
             "id": self.id,
             "type": self.job_type,
@@ -187,6 +243,7 @@ class ScanJob(db.Model):
             "finishedAt": self.finished_at.isoformat() if self.finished_at else None,
             "elapsedSeconds": elapsed,
             "etaSeconds": eta,
+            "staleSeconds": stale,
         }
 
 
@@ -204,6 +261,14 @@ def update_db_schema():
             if 'german_check_result' not in columns:
                 with db.engine.connect() as conn:
                     conn.execute(text("ALTER TABLE leads ADD COLUMN german_check_result TEXT"))
+                    conn.commit()
+            if 'last_exported' not in columns:
+                with db.engine.connect() as conn:
+                    conn.execute(text("ALTER TABLE leads ADD COLUMN last_exported VARCHAR"))
+                    conn.commit()
+            if 'not_found_date' not in columns:
+                with db.engine.connect() as conn:
+                    conn.execute(text("ALTER TABLE leads ADD COLUMN not_found_date VARCHAR"))
                     conn.commit()
         except Exception as e:
             print(f"⚠️  Schema-Migration (leads) uebersprungen: {e}")
@@ -392,16 +457,74 @@ def analyze_with_ai(text=None, image_url=None):
     except Exception:
         return None, "Fehler"
 
+# Fehler-Schluesselwoerter, die eindeutig auf 'Profil existiert nicht (mehr)' hindeuten.
+# Bei 429/500/timeout wollen wir den User NICHT als geloescht markieren -> diese Liste
+# bewusst klein halten.
+_PROFILE_GONE_HINTS = (
+    "404", "not found", "user_not_found", "does not exist",
+    "no user", "user not exist", "user does not exist", "no such user",
+    "user_invalid", "username_invalid", "deleted", "removed",
+)
+
+
+def _looks_like_profile_gone(err_text):
+    t = (err_text or "").lower()
+    return any(h in t for h in _PROFILE_GONE_HINTS)
+
+
+def _profile_response_indicates_gone(details):
+    """Erkennt, ob die Antwort von cl.user_by_username_v1 'Profil existiert nicht' bedeutet.
+
+    HikerAPI wirft bei toten Profilen KEINE Exception, sondern liefert ein
+    Fehler-Dict zurueck, z.B.:
+        {"detail": "Target user not found: 78741532963", "exc_type": "UserNotFound"}
+    Genau das pruefen wir hier. Zusaetzlich: kein 'pk' im Dict = kein echter User.
+    """
+    if not details:
+        return True
+    if not isinstance(details, dict):
+        return False
+    exc_type = (details.get('exc_type') or '').strip()
+    detail_msg = (details.get('detail') or '').strip()
+    if exc_type:
+        # HikerAPI nutzt z.B. UserNotFound, UserBanned, UserUnavailable
+        gone_excs = ('usernotfound', 'userdeleted', 'userbanned', 'userunavailable',
+                     'private_account_not_found', 'account_disabled')
+        if exc_type.lower() in gone_excs:
+            return True
+        if _looks_like_profile_gone(exc_type):
+            return True
+    if detail_msg and _looks_like_profile_gone(detail_msg):
+        return True
+    # Echtes User-Objekt MUSS einen 'pk' haben - sonst ist es kein gueltiges Profil
+    if not details.get('pk') and not details.get('id'):
+        return True
+    return False
+
+
 def analyze_german_deep(cl, username, update_fn=None):
+    """Tiefe DACH-Analyse eines Profils.
+
+    Rueckgabe: (is_german: bool, reason: str, profile_exists: Optional[bool])
+       profile_exists=True   -> Profil existiert
+       profile_exists=False  -> Profil existiert nicht (404 / leere Antwort / UserNotFound)
+       profile_exists=None   -> Unbekannt (anderer Fehler, Timeout etc.)
+    """
     try:
         if update_fn: update_fn("Lade Profil...")
-        details = cl.user_by_username_v1(username)
-        if not details: return False, "Profil nicht geladen"
+        try:
+            details = cl.user_by_username_v1(username)
+        except Exception as fetch_err:
+            if _looks_like_profile_gone(str(fetch_err)):
+                return False, "✗ Profil existiert nicht", False
+            return False, f"Crash: {str(fetch_err)}", None
+        if _profile_response_indicates_gone(details):
+            return False, "✗ Profil existiert nicht", False
         user_pk = details.get('pk')
         bio = details.get('biography', '')
         full_name = details.get('full_name', '')
         is_de, reason = is_german_text(f"{full_name} {bio}")
-        if is_de: return True, f"✓ DE ({reason})"
+        if is_de: return True, f"✓ DE ({reason})", True
         all_captions = []
         image_urls = []
         community_comments = []
@@ -427,15 +550,55 @@ def analyze_german_deep(cl, username, update_fn=None):
                                     comm = c.get('text', '')
                                     if comm: community_comments.append(comm)
                         except: pass
+        if update_fn: update_fn("KI-Textanalyse...")
         context = f"BIO: {bio} | NAME: {full_name} | COMMS: {' | '.join(community_comments[:15])} | CAPS: {' | '.join(all_captions[:5])}"
         is_de_ai, ai_reason = analyze_with_ai(text=context)
-        if is_de_ai: return True, f"✓ DE KI ({ai_reason})"
+        if is_de_ai: return True, f"✓ DE KI ({ai_reason})", True
+        # Bild-Analyse auf 2 limitiert (vorher 5) - jedes Bild kostet bis zu 15s OpenAI-Latenz.
         if image_urls:
-            for idx, img_url in enumerate(image_urls[:5]):
+            for idx, img_url in enumerate(image_urls[:2]):
+                if update_fn: update_fn(f"KI-Bildanalyse {idx+1}/2...")
                 is_de_vis, vis_reason = analyze_with_ai(image_url=img_url)
-                if is_de_vis: return True, f"✓ DE Bild ({vis_reason})"
-        return False, "✗ kein DE"
-    except Exception as e: return False, f"Crash: {str(e)}"
+                if is_de_vis: return True, f"✓ DE Bild ({vis_reason})", True
+        return False, "✗ kein DE", True
+    except Exception as e:
+        if _looks_like_profile_gone(str(e)):
+            return False, "✗ Profil existiert nicht", False
+        return False, f"Crash: {str(e)}", None
+
+
+# Globaler Worker-Pool fuer DACH-Scans. Wenn ein Profil-Call haengt, koennen
+# wir den Future einfach abbrechen und gehen weiter - der haengende Thread
+# laeuft im Pool im Hintergrund weiter (wird beim Backend-Restart aufgeraeumt).
+# Wichtig: max_workers=1 im Pool, weil pro Scan nur ein User gleichzeitig
+# verarbeitet werden soll. Der Pool dient hier nur als Timeout-Mechanismus.
+_SCAN_TIMEOUT_POOL = concurrent.futures.ThreadPoolExecutor(
+    max_workers=4, thread_name_prefix='dach-scan'
+)
+
+PER_USER_SCAN_TIMEOUT_SECONDS = 90  # max. Sekunden pro User, dann skip
+
+
+def analyze_german_with_timeout(cl, username, update_fn=None,
+                                 timeout_seconds=PER_USER_SCAN_TIMEOUT_SECONDS):
+    """Wrapper um analyze_german_deep mit harter Pro-User-Deadline.
+
+    Wenn ein API-Call (HikerAPI / OpenAI) haengt, wuerde der gesamte Scan
+    blockieren. Mit diesem Wrapper wird der User nach `timeout_seconds`
+    abgebrochen und als "Timeout" markiert - der Scan geht zum naechsten
+    User weiter.
+    """
+    future = _SCAN_TIMEOUT_POOL.submit(analyze_german_deep, cl, username, update_fn)
+    try:
+        return future.result(timeout=timeout_seconds)
+    except concurrent.futures.TimeoutError:
+        # Wir koennen den hartnaeckigen Thread in Python nicht killen,
+        # aber wir gehen einfach weiter. Im Hintergrund laeuft der Future
+        # noch zu Ende (oder bleibt fuer immer haengen) - das ist OK,
+        # weil wir das Ergebnis verwerfen.
+        return False, f"⏱ Timeout ({timeout_seconds}s)", None
+    except Exception as e:
+        return False, f"Crash: {str(e)}", None
 
 @app.route('/health', methods=['GET'])
 @app.route('/api/health', methods=['GET'])
@@ -583,12 +746,31 @@ def analyze_german():
                     def update_progress(msg, _idx=idx, _name=name):
                         _heartbeat(job_id, message=f"[{_idx+1}/{len(names)}] {_name}: {msg}")
 
+                    user_t0 = time.time()
                     try:
                         lead = Lead.query.filter(Lead.username.ilike(name)).first()
                         if lead:
-                            is_de, res = analyze_german_deep(cl, lead.username, update_fn=update_progress)
+                            # Heartbeat VOR dem Scan, damit das Frontend weiss wer gerade dran ist
+                            _heartbeat(job_id, processed=idx,
+                                       message=f"[{idx+1}/{len(names)}] {name}: starte...", force=True)
+                            is_de, res, profile_exists = analyze_german_with_timeout(
+                                cl, lead.username, update_fn=update_progress
+                            )
                             lead.is_german, lead.german_check_result = is_de, res
+                            # 'Letzter Scan' immer aktualisieren - egal ob Profil existiert oder nicht.
+                            lead.last_scraped_date = datetime.now().isoformat()
+                            # Profil-Existenz: explizit gesetzt (True/False), bei None nicht anfassen.
+                            if profile_exists is False:
+                                lead.not_found_date = datetime.now().isoformat()
+                            elif profile_exists is True and lead.not_found_date:
+                                # Profil ist (wieder) da -> alten "not_found"-Marker loeschen
+                                lead.not_found_date = None
                             db.session.commit()
+                            elapsed = time.time() - user_t0
+                            if elapsed > PER_USER_SCAN_TIMEOUT_SECONDS - 1:
+                                print(f"⏱ Timeout bei {name} nach {elapsed:.1f}s - skip")
+                            else:
+                                print(f"✓ {name}: {res} ({elapsed:.1f}s)")
                     except Exception as inner:
                         db.session.rollback()
                         print(f"⚠️  Fehler bei {name}: {inner}")
@@ -687,6 +869,138 @@ def delete_users():
         db.session.commit()
         return jsonify({"success": True})
     except Exception as e: return jsonify({"error": str(e)}), 500
+
+@app.route('/api/exports', methods=['GET'])
+def exports_list():
+    """Liefert die komplette Export-Historie (neueste zuerst).
+    Pro Eintrag nur Vorschau-Daten - die volle Liste kommt via GET /api/exports/<id>.
+    """
+    batches = ExportBatch.query.order_by(ExportBatch.created_at.desc()).all()
+    return jsonify({"exports": [b.to_dict(include_payload=False) for b in batches]})
+
+
+@app.route('/api/exports', methods=['POST'])
+def exports_create():
+    """Legt einen neuen Export-Eintrag an.
+    Body: {
+        "pks": [123, 456, ...],         # Lead-PKs die exportiert werden sollen
+        "label": "Favoriten 02.05.2026",  # optional, wird sonst generiert
+        "kind": "usernames" | "emails"   # default 'usernames'
+    }
+    Markiert die Leads automatisch als 'exportiert' (last_exported = JETZT).
+    """
+    data = request.json or {}
+    pks = data.get('pks') or []
+    if not pks:
+        return jsonify({"error": "Keine PKs uebergeben"}), 400
+    label = (data.get('label') or '').strip() or None
+    kind = data.get('kind') if data.get('kind') in ('usernames', 'emails') else 'usernames'
+
+    try:
+        pks_int = [int(p) for p in pks]
+        leads = Lead.query.filter(Lead.pk.in_(pks_int)).all()
+        if not leads:
+            return jsonify({"error": "Keine passenden Leads gefunden"}), 404
+
+        # Reihenfolge wie vom Client uebergeben
+        order = {pk: idx for idx, pk in enumerate(pks_int)}
+        leads.sort(key=lambda l: order.get(l.pk, 1e9))
+
+        usernames = [l.username for l in leads if l.username]
+        # Emails herausziehen (Bio-Fallback fuer Konsistenz mit Frontend)
+        email_re = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
+        emails = []
+        for l in leads:
+            m = email_re.search(l.email or '')
+            if not m:
+                m = email_re.search(l.bio or '')
+            if m:
+                emails.append(m.group(0).lower().strip())
+        emails = list(dict.fromkeys(emails))  # dedupe, Reihenfolge erhalten
+
+        now = datetime.utcnow()
+        if not label:
+            label = f"Export {now.strftime('%d.%m.%Y %H:%M')} ({len(leads)} User)"
+
+        batch = ExportBatch(
+            label=label,
+            kind=kind,
+            count=len(leads),
+            pks_json=json.dumps([l.pk for l in leads]),
+            usernames_json=json.dumps(usernames),
+            emails_json=json.dumps(emails),
+            created_at=now,
+        )
+        db.session.add(batch)
+
+        # Leads als exportiert markieren
+        now_iso = datetime.now().isoformat()
+        Lead.query.filter(Lead.pk.in_([l.pk for l in leads])).update(
+            {Lead.last_exported: now_iso},
+            synchronize_session=False
+        )
+        db.session.commit()
+
+        return jsonify({
+            "success": True,
+            "export": batch.to_dict(include_payload=True),
+            "exportedAt": now_iso,
+        })
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/exports/<int:export_id>', methods=['GET'])
+def exports_get(export_id):
+    """Liefert einen Export-Eintrag inklusive der vollstaendigen Listen."""
+    batch = db.session.get(ExportBatch, export_id)
+    if not batch:
+        return jsonify({"error": "Nicht gefunden"}), 404
+    return jsonify(batch.to_dict(include_payload=True))
+
+
+@app.route('/api/exports/<int:export_id>', methods=['DELETE'])
+def exports_delete(export_id):
+    """Loescht einen Export-Eintrag aus der Historie.
+    Beruehrt die zugehoerigen Leads NICHT."""
+    batch = db.session.get(ExportBatch, export_id)
+    if not batch:
+        return jsonify({"error": "Nicht gefunden"}), 404
+    try:
+        db.session.delete(batch)
+        db.session.commit()
+        return jsonify({"success": True})
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/leads/mark-exported', methods=['POST'])
+def mark_exported():
+    """Setzt fuer eine Liste von PKs das Feld last_exported auf JETZT.
+    Wird vom Frontend nach einem erfolgreichen Email-Export gerufen,
+    damit man im Favoriten-Tab nach 'schon exportiert' / 'nicht exportiert'
+    filtern kann.
+    Body: {"pks": [123, 456, ...]}
+    """
+    data = request.json or {}
+    pks = data.get('pks', [])
+    if not pks:
+        return jsonify({"error": "Keine PKs uebergeben"}), 400
+    try:
+        pks_int = [int(p) for p in pks]
+        now_iso = datetime.now().isoformat()
+        Lead.query.filter(Lead.pk.in_(pks_int)).update(
+            {Lead.last_exported: now_iso},
+            synchronize_session=False
+        )
+        db.session.commit()
+        return jsonify({"success": True, "exportedAt": now_iso, "updated": len(pks_int)})
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 500
+
 
 @app.route('/api/lead/update-status', methods=['POST'])
 def update_status():
