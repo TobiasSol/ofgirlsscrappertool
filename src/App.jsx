@@ -838,8 +838,8 @@ export default function App() {
                         <tr>
                             <th className="p-4 w-12 text-center"><input type="checkbox" checked={paginatedUsers.length > 0 && paginatedUsers.every(u => selectedUsers.includes(u.pk))} onChange={toggleSelectAll} className="w-4 h-4 accent-purple-600"/></th>
                             <th className="p-4 cursor-pointer" style={{width: colWidths.user}} onClick={() => requestSort('username')}><div className="flex items-center gap-1">USER {sortConfig.key === 'username' && <ArrowUpDown size={12} className={sortConfig.direction === 'asc' ? 'rotate-180' : ''}/>}</div><ResizeHandle id="user"/></th>
-                            <th className="p-4" style={{width: colWidths.email}}><div className="flex items-center gap-1"><Mail size={12}/> E-MAIL</div><ResizeHandle id="email"/></th>
                             <th className="p-4" style={{width: colWidths.actions}}>AKTIONEN <ResizeHandle id="actions"/></th>
+                            <th className="p-4" style={{width: colWidths.email}}><div className="flex items-center gap-1"><Mail size={12}/> E-MAIL</div><ResizeHandle id="email"/></th>
                             <th className="p-4" style={{width: colWidths.bio}}>BIOGRAFIE <ResizeHandle id="bio"/></th>
                             <th className="p-4 cursor-pointer" style={{width: colWidths.follower}} onClick={() => requestSort('followersCount')}><div className="flex items-center gap-1">FOLLOWER {sortConfig.key === 'followersCount' && <ArrowUpDown size={12} className={sortConfig.direction === 'asc' ? 'rotate-180' : ''}/>}</div><ResizeHandle id="follower"/></th>
                             <th className="p-4 cursor-pointer" style={{width: colWidths.date}} onClick={() => requestSort('foundDate')}><div className="flex items-center gap-1">DATUM {sortConfig.key === 'foundDate' && <ArrowUpDown size={12} className={sortConfig.direction === 'asc' ? 'rotate-180' : ''}/>}</div><ResizeHandle id="date"/></th>
@@ -897,6 +897,14 @@ export default function App() {
                                         </div>
                                     </td>
                                     <td className="p-4 align-top">
+                                        <div className="flex gap-1">
+                                            <button onClick={() => handleStatusChange(user.pk, user.status === 'favorite' ? 'active' : 'favorite')} className={`p-2 rounded border transition-all ${user.status === 'favorite' ? 'bg-green-500 border-green-600 text-white shadow-md' : 'bg-white text-green-500 border-green-100 hover:bg-green-50'}`} title="Favorit"><Heart size={16} className={user.status === 'favorite' ? 'fill-white' : ''}/></button>
+                                            <button onClick={() => handleStatusChange(user.pk, user.status === 'eng' ? 'active' : 'eng')} className={`p-2 rounded border transition-all ${user.status === 'eng' ? 'bg-blue-500 border-blue-600 text-white shadow-md' : 'bg-white text-blue-500 border-blue-100 hover:bg-blue-50'}`} title="English"><Globe size={16}/></button>
+                                            <button onClick={() => handleStatusChange(user.pk, 'blocked')} className="p-2 bg-white border border-red-100 rounded text-red-500 hover:bg-red-500 hover:text-white transition-all" title="Blockieren"><Ban size={16}/></button>
+                                            <button onClick={() => handleStatusChange(user.pk, user.status === 'hidden' ? 'active' : 'hidden')} className={`p-2 rounded border transition-all ${user.status === 'hidden' ? 'bg-orange-500 border-orange-600 text-white' : 'bg-white text-orange-500 border-orange-100 hover:bg-orange-50'}`} title="Verstecken"><EyeOff size={16}/></button>
+                                        </div>
+                                    </td>
+                                    <td className="p-4 align-top">
                                         {(() => {
                                             const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/;
                                             const fromField = (user.email || '').match(emailRegex)?.[0];
@@ -930,14 +938,6 @@ export default function App() {
                                                 </div>
                                             );
                                         })()}
-                                    </td>
-                                    <td className="p-4 align-top">
-                                        <div className="flex gap-1">
-                                            <button onClick={() => handleStatusChange(user.pk, user.status === 'favorite' ? 'active' : 'favorite')} className={`p-2 rounded border transition-all ${user.status === 'favorite' ? 'bg-green-500 border-green-600 text-white shadow-md' : 'bg-white text-green-500 border-green-100 hover:bg-green-50'}`} title="Favorit"><Heart size={16} className={user.status === 'favorite' ? 'fill-white' : ''}/></button>
-                                            <button onClick={() => handleStatusChange(user.pk, user.status === 'eng' ? 'active' : 'eng')} className={`p-2 rounded border transition-all ${user.status === 'eng' ? 'bg-blue-500 border-blue-600 text-white shadow-md' : 'bg-white text-blue-500 border-blue-100 hover:bg-blue-50'}`} title="English"><Globe size={16}/></button>
-                                            <button onClick={() => handleStatusChange(user.pk, 'blocked')} className="p-2 bg-white border border-red-100 rounded text-red-500 hover:bg-red-500 hover:text-white transition-all" title="Blockieren"><Ban size={16}/></button>
-                                            <button onClick={() => handleStatusChange(user.pk, user.status === 'hidden' ? 'active' : 'hidden')} className={`p-2 rounded border transition-all ${user.status === 'hidden' ? 'bg-orange-500 border-orange-600 text-white' : 'bg-white text-orange-500 border-orange-100 hover:bg-orange-50'}`} title="Verstecken"><EyeOff size={16}/></button>
-                                        </div>
                                     </td>
                                     <td className="p-4 align-top text-slate-600 truncate">{user.bio}</td>
                                     <td className="p-4 align-top font-bold text-blue-600">{user.followersCount?.toLocaleString()}</td>

@@ -587,8 +587,18 @@ def analyze_german_with_timeout(cl, username, update_fn=None,
     blockieren. Mit diesem Wrapper wird der User nach `timeout_seconds`
     abgebrochen und als "Timeout" markiert - der Scan geht zum naechsten
     User weiter.
+
+    WICHTIG: Der Worker-Thread des ThreadPoolExecutors hat keinen Flask-
+    App-Context. analyze_german_deep ruft ueber update_fn -> _heartbeat
+    aber db.session.commit() auf - das wuerde sonst mit
+    "Working outside of application context" crashen.
+    Daher aktivieren wir den App-Context explizit im Worker.
     """
-    future = _SCAN_TIMEOUT_POOL.submit(analyze_german_deep, cl, username, update_fn)
+    def _runner():
+        with app.app_context():
+            return analyze_german_deep(cl, username, update_fn)
+
+    future = _SCAN_TIMEOUT_POOL.submit(_runner)
     try:
         return future.result(timeout=timeout_seconds)
     except concurrent.futures.TimeoutError:
